@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>评论系统控制面板</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+:root {
+  --bg: #1a1a2e; --bg2: #16213e; --bg3: #0f3460;
+  --text: #e0e0e0; --text2: #a0a0b0; --accent: #e94560;
+  --green: #00c853; --yellow: #ffd600; --red: #ff1744;
+  --border: #2a2a4a; --input-bg: #1e1e3a;
+}
+body { font-family: -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--accent); text-decoration: none; }
+
+/* Header */
+.header { background: var(--bg2); padding: 16px 32px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.header h1 { font-size: 20px; font-weight: 600; }
+.header h1 span { color: var(--accent); }
+.status-badge { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+.status-dot.on { background: var(--green); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+/* Tabs */
+.tabs { display: flex; background: var(--bg2); border-bottom: 2px solid var(--border); padding: 0 32px; }
+.tab { padding: 12px 24px; cursor: pointer; color: var(--text2); font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Content */
+.content { padding: 24px 32px; max-width: 1200px; margin: 0 auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Cards */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.card-title { font-size: 14px; color: var(--text2); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+/* Stats row */
+.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; text-align: center; }
+.stat-num { font-size: 36px; font-weight: 700; }
+.stat-num.green { color: var(--green); }
+.stat-num.red { color: var(--red); }
+.stat-num.yellow { color: var(--yellow); }
+.stat-label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+/* Buttons */
+.btn { padding: 10px 24px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 600; transition: all .2s; }
+.btn-start { background: var(--green); color: #000; }
+.btn-start:hover { background: #00e676; }
+.btn-stop { background: var(--red); color: #fff; }
+.btn-stop:hover { background: #ff5252; }
+.btn-once { background: var(--bg3); color: #fff; border: 1px solid var(--accent); }
+.btn-once:hover { background: var(--accent); }
+.btn-save { background: var(--accent); color: #fff; }
+.btn-save:hover { opacity: 0.9; }
+.btn-group { display: flex; gap: 12px; margin-top: 16px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Form elements */
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+.form-input, .form-select, .form-textarea {
+  width: 100%; padding: 10px 14px; background: var(--input-bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-size: 14px; font-family: inherit;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus { outline: none; border-color: var(--accent); }
+.form-textarea { min-height: 200px; resize: vertical; font-family: monospace; line-height: 1.6; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-hint { font-size: 12px; color: var(--text2); margin-top: 4px; }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: var(--bg3); padding: 10px 12px; text-align: left; color: var(--text2); font-weight: 600; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--border); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr:hover td { background: rgba(233,69,96,0.05); }
+.badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-success { background: rgba(0,200,83,0.2); color: var(--green); }
+.badge-failed { background: rgba(255,23,68,0.2); color: var(--red); }
+.badge-pending { background: rgba(255,214,0,0.2); color: var(--yellow); }
+
+/* Log viewer */
+.log-box { background: #0a0a1a; border: 1px solid var(--border); border-radius: 6px; padding: 16px; height: 500px; overflow-y: auto; font-family: 'Menlo', 'Consolas', monospace; font-size: 12px; line-height: 1.8; }
+.log-line { color: var(--text2); }
+.log-line.error { color: var(--red); }
+.log-line.warning { color: var(--yellow); }
+.log-line.info { color: var(--green); }
+
+/* Toast */
+.toast { position: fixed; top: 20px; right: 20px; padding: 12px 24px; border-radius: 6px; color: #fff; font-size: 14px; z-index: 9999; animation: fadeIn .3s; }
+.toast.ok { background: var(--green); color: #000; }
+.toast.err { background: var(--red); }
+@keyframes fadeIn { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+
+/* Filter row */
+.filter-row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.filter-btn { padding: 6px 16px; border: 1px solid var(--border); background: transparent; color: var(--text2); border-radius: 4px; cursor: pointer; font-size: 13px; }
+.filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(233,69,96,0.1); }
+
+/* Action text */
+.action-text { font-size: 13px; color: var(--text2); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>&#9670;</span> 评论系统控制面板</h1>
+  <div class="status-badge">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">已停止</span>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="console">控制台</div>
+  <div class="tab" data-tab="ai">AI 配置</div>
+  <div class="tab" data-tab="comments">评论库</div>
+  <div class="tab" data-tab="records">评论记录</div>
+  <div class="tab" data-tab="sentiment">舆论监控</div>
+  <div class="tab" data-tab="kpi">KPI 面板</div>
+  <div class="tab" data-tab="logs">运行日志</div>
+</div>
+
+<div class="content">
+
+  <!-- ========== 控制台 ========== -->
+  <div class="panel active" id="panel-console">
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-num green" id="statTodaySuccess">0</div><div class="stat-label">今日评论</div></div>
+      <div class="stat-card"><div class="stat-num" id="statTotal">0</div><div class="stat-label">历史总计</div></div>
+      <div class="stat-card"><div class="stat-num red" id="statFailed">0</div><div class="stat-label">失败</div></div>
+      <div class="stat-card"><div class="stat-num yellow" id="statCycle">0</div><div class="stat-label">已执行轮数</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">操作</div>
+      <div class="btn-group">
+        <button class="btn btn-start" id="btnStart" onclick="doStart()">启动监控</button>
+        <button class="btn btn-stop" id="btnStop" onclick="doStop()" disabled>停止监控</button>
+        <button class="btn btn-once" id="btnOnce" onclick="doRunOnce()">单次执行</button>
+      </div>
+      <div class="action-text" id="actionText">就绪</div>
+    </div>
+
+    <div class="card" id="errorCard" style="display:none; border-color: var(--red);">
+      <div class="card-title" style="color:var(--red)">最近错误</div>
+      <div id="errorText" style="color:var(--red); font-size:13px;"></div>
+    </div>
+  </div>
+
+  <!-- ========== AI 配置 ========== -->
+  <div class="panel" id="panel-ai">
+    <div class="card">
+      <div class="card-title">AI 评论生成配置</div>
+      <div class="form-group">
+        <label class="form-label">生成模式</label>
+        <select class="form-select" id="aiProvider" onchange="onProviderChange()">
+          <option value="file">从评论库随机抽取（无需API）</option>
+          <option value="deepseek">DeepSeek V4 Pro</option>
+          <option value="openai">OpenAI / 兼容API</option>
+          <option value="gemini">Google Gemini</option>
+        </select>
+      </div>
+      <div id="aiFields" style="display:none">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">API Key</label>
+            <input type="password" class="form-input" id="aiApiKey" placeholder="sk-... 或 AIza...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">模型</label>
+            <input type="text" class="form-input" id="aiModel" placeholder="deepseek-v4-pro / gpt-4 / gemini-pro">
+          </div>
+        </div>
+        <div class="form-group" id="baseUrlGroup">
+          <label class="form-label">自定义 Base URL（可选，留空用官方地址）</label>
+          <input type="text" class="form-input" id="aiBaseUrl" placeholder="https://api.deepseek.com/v1">
+          <div class="form-hint">如使用中转站/代理，请填写其 API 地址</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Prompt 模板</label>
+          <textarea class="form-textarea" id="aiPrompt" style="min-height:100px" placeholder="使用 {title} 和 {context} 作为变量"></textarea>
+          <div class="form-hint">可用变量：{title} = 帖子标题，{context} = 帖子摘要</div>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-save" onclick="saveAiConfig()">保存 AI 配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 评论库 ========== -->
+  <div class="panel" id="panel-comments">
+    <div class="card">
+      <div class="card-title">评论库管理 <span id="commentCount" style="color:var(--accent)"></span></div>
+      <div class="form-hint" style="margin-bottom:12px">每行一条评论，当选择"文件模式"时将从这里随机抽取</div>
+      <textarea class="form-textarea" id="commentsText" style="min-height:400px"></textarea>
+      <div class="btn-group">
+        <button class="btn btn-save" onclick="saveComments()">保存评论库</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 评论记录 ========== -->
+  <div class="panel" id="panel-records">
+    <div class="card">
+      <div class="card-title">评论记录</div>
+      <div class="filter-row">
+        <button class="filter-btn active" data-filter="all" onclick="filterRecords('all',this)">全部</button>
+        <button class="filter-btn" data-filter="success" onclick="filterRecords('success',this)">成功</button>
+        <button class="filter-btn" data-filter="failed" onclick="filterRecords('failed',this)">失败</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>标题</th><th>昵称</th><th>评论</th><th>状态</th><th>时间</th>
+          </tr></thead>
+          <tbody id="recordsBody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px; text-align:center;">
+        <button class="btn btn-once" id="btnLoadMore" onclick="loadMoreRecords()">加载更多</button>
+        <span id="recordInfo" style="margin-left:12px; color:var(--text2); font-size:13px;"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 舆论监控 ========== -->
+  <div class="panel" id="panel-sentiment">
+    <div class="card">
+      <div class="card-title">舆论关键词设置</div>
+      <div class="form-group">
+        <label class="form-label">监控关键词（逗号分隔）</label>
+        <input type="text" class="form-input" id="sentimentKeywords" placeholder="卡,看不了,打不开,加载慢...">
+        <div class="form-hint">当其他用户的评论包含这些关键词时，会自动记录到下方表格</div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-save" onclick="saveSentimentConfig()">保存关键词</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">舆论记录 <span id="sentimentStats" style="color:var(--yellow)"></span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>帖子标题</th><th>评论者</th><th>评论内容</th><th>匹配词</th><th>评论时间</th><th>抓取时间</th>
+          </tr></thead>
+          <tbody id="sentimentBody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px; text-align:center;">
+        <button class="btn btn-once" id="btnSentimentMore" onclick="loadMoreSentiment()">加载更多</button>
+        <span id="sentimentInfo" style="margin-left:12px; color:var(--text2); font-size:13px;"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== KPI 面板 ========== -->
+  <div class="panel" id="panel-kpi">
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-num green" id="kpiToday">0</div><div class="stat-label">今日总评论</div></div>
+      <div class="stat-card"><div class="stat-num" id="kpiWeek">0</div><div class="stat-label">本周总评论</div></div>
+      <div class="stat-card"><div class="stat-num yellow" id="kpiMonth">0</div><div class="stat-label">本月总评论</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:#64b5f6" id="kpiAvg">0</div><div class="stat-label">日均评论</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">添加官方后台评论记录</div>
+      <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        <div class="form-group" style="margin-bottom:0; flex:0 0 160px;">
+          <label class="form-label">日期</label>
+          <input type="date" class="form-input" id="kpiDate">
+        </div>
+        <div class="form-group" style="margin-bottom:0; flex:0 0 120px;">
+          <label class="form-label">评论条数</label>
+          <input type="number" class="form-input" id="kpiCount" min="0" placeholder="0">
+        </div>
+        <div class="form-group" style="margin-bottom:0; flex:1; min-width:150px;">
+          <label class="form-label">备注（可选）</label>
+          <input type="text" class="form-input" id="kpiNote" placeholder="例：XX平台后台评论">
+        </div>
+        <button class="btn btn-save" onclick="saveKpi()" style="height:40px;">保存</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">评论趋势图（最近30天）</div>
+      <div style="position:relative; height:320px;">
+        <canvas id="kpiChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">每日明细</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>日期</th><th>自动评论</th><th>官方后台</th><th>总计</th><th>备注</th><th>操作</th>
+          </tr></thead>
+          <tbody id="kpiBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 日志 ========== -->
+  <div class="panel" id="panel-logs">
+    <div class="card">
+      <div class="card-title">运行日志 <span style="font-size:11px; color:var(--text2)">（自动刷新）</span></div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ============ Tab 切换 ============
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+
+    if (tab.dataset.tab === 'ai') loadAiConfig();
+    if (tab.dataset.tab === 'comments') loadComments();
+    if (tab.dataset.tab === 'records') { recordOffset = 0; loadRecords(); }
+    if (tab.dataset.tab === 'sentiment') { sentimentOffset = 0; loadSentiment(); loadSentimentConfig(); }
+    if (tab.dataset.tab === 'kpi') loadKpi();
+    if (tab.dataset.tab === 'logs') loadLogs();
+  });
+});
+
+// ============ Toast ============
+function toast(msg, ok = true) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ============ 状态轮询 ============
+function refreshStatus() {
+  fetch('/api/status').then(r => r.json()).then(d => {
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    if (d.running) {
+      dot.classList.add('on');
+      txt.textContent = '运行中';
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+      document.getElementById('btnOnce').disabled = true;
+    } else {
+      dot.classList.remove('on');
+      txt.textContent = '已停止';
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+      document.getElementById('btnOnce').disabled = false;
+    }
+    document.getElementById('statTodaySuccess').textContent = d.db_stats.today_success || 0;
+    document.getElementById('statTotal').textContent = d.db_stats.total;
+    document.getElementById('statFailed').textContent = d.db_stats.failed;
+    document.getElementById('statCycle').textContent = d.cycle_count;
+    document.getElementById('actionText').textContent = d.current_action === 'idle' ? '就绪' : d.current_action;
+
+    if (d.last_error) {
+      document.getElementById('errorCard').style.display = 'block';
+      document.getElementById('errorText').textContent = d.last_error;
+    } else {
+      document.getElementById('errorCard').style.display = 'none';
+    }
+  }).catch(() => {});
+}
+setInterval(refreshStatus, 2000);
+refreshStatus();
+
+// ============ 启动/停止 ============
+function doStart() {
+  fetch('/api/start', {method:'POST'}).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok); refreshStatus();
+  });
+}
+function doStop() {
+  fetch('/api/stop', {method:'POST'}).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok); refreshStatus();
+  });
+}
+function doRunOnce() {
+  fetch('/api/run-once', {method:'POST'}).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok); refreshStatus();
+  });
+}
+
+// ============ AI 配置 ============
+let currentConfig = {};
+const aiPresets = {
+  deepseek: {
+    model: 'deepseek-v4-pro',
+    base_url: 'https://api.deepseek.com/v1',
+    prompt_template: '主要学习评论库里的真实评论，短、粗糙、直给，不要像正常点评。不要固定复读“绷不住了/不是哥们/我服了/哈人/离谱”，每次换开头和句式，不要照抄样本，不要复述标题，不要解释。'
+  },
+  openai: {
+    model: 'gpt-4o-mini',
+    base_url: 'https://api.openai.com/v1'
+  },
+  gemini: {
+    model: 'gemini-pro',
+    base_url: ''
+  }
+};
+
+function loadAiConfig() {
+  fetch('/api/config').then(r=>r.json()).then(cfg => {
+    currentConfig = cfg;
+    const ai = cfg.ai || {};
+    document.getElementById('aiProvider').value = ai.provider || 'file';
+    document.getElementById('aiApiKey').value = ai.api_key || '';
+    document.getElementById('aiModel').value = ai.model || 'gpt-4';
+    document.getElementById('aiBaseUrl').value = ai.base_url || '';
+    document.getElementById('aiPrompt').value = ai.prompt_template || '';
+    onProviderChange();
+  });
+}
+
+function onProviderChange() {
+  const v = document.getElementById('aiProvider').value;
+  const modelInput = document.getElementById('aiModel');
+  const baseUrlInput = document.getElementById('aiBaseUrl');
+  const promptInput = document.getElementById('aiPrompt');
+  const preset = aiPresets[v];
+  document.getElementById('aiFields').style.display = v === 'file' ? 'none' : 'block';
+  document.getElementById('baseUrlGroup').style.display = (v === 'openai' || v === 'deepseek') ? 'block' : 'none';
+  if (!preset) return;
+  if (!modelInput.value || modelInput.value === 'deepseek-chat' || modelInput.value === 'deepseek-v4-flash' || modelInput.value === 'gpt-4') {
+    modelInput.value = preset.model || '';
+  }
+  if (!baseUrlInput.value || baseUrlInput.value === 'https://api.deepseek.com/v1' || baseUrlInput.value === 'https://api.openai.com/v1') {
+    baseUrlInput.value = preset.base_url || '';
+  }
+  if (!promptInput.value && preset.prompt_template) {
+    promptInput.value = preset.prompt_template;
+  }
+}
+
+function saveAiConfig() {
+  fetch('/api/config').then(r=>r.json()).then(cfg => {
+    cfg.ai = {
+      provider: document.getElementById('aiProvider').value,
+      api_key: document.getElementById('aiApiKey').value,
+      model: document.getElementById('aiModel').value,
+      base_url: document.getElementById('aiBaseUrl').value,
+      prompt_template: document.getElementById('aiPrompt').value,
+    };
+    return fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(cfg)
+    });
+  }).then(r=>r.json()).then(d => toast(d.msg, d.ok));
+}
+
+// ============ 评论库 ============
+function loadComments() {
+  fetch('/api/comments').then(r=>r.json()).then(d => {
+    document.getElementById('commentsText').value = d.content;
+    document.getElementById('commentCount').textContent = `(${d.count} 条)`;
+  });
+}
+
+function saveComments() {
+  const content = document.getElementById('commentsText').value;
+  fetch('/api/comments', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({content})
+  }).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok);
+    if (d.count !== undefined) document.getElementById('commentCount').textContent = `(${d.count} 条)`;
+  });
+}
+
+// ============ 评论记录 ============
+let recordOffset = 0;
+let recordFilter = 'all';
+
+function filterRecords(status, btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  recordFilter = status;
+  recordOffset = 0;
+  loadRecords();
+}
+
+function loadRecords(append = false) {
+  const limit = 20;
+  fetch(`/api/records?status=${recordFilter}&limit=${limit}&offset=${recordOffset}`)
+    .then(r=>r.json()).then(d => {
+      const tbody = document.getElementById('recordsBody');
+      if (!append) tbody.innerHTML = '';
+      d.records.forEach(r => {
+        const tr = document.createElement('tr');
+        const statusCls = r.status === 'success' ? 'badge-success' : r.status === 'failed' ? 'badge-failed' : 'badge-pending';
+        const statusLabel = r.status === 'success' ? '成功' : r.status === 'failed' ? '失败' : '待处理';
+        const nick = r.nickname && r.nickname !== '(见日志)' ? esc(r.nickname) : '<span style="color:var(--text2)">-</span>';
+        const cmt = r.comment && r.comment !== '(见日志)' && r.comment !== '(失败)' ? esc(r.comment) : '<span style="color:var(--text2)">-</span>';
+        tr.innerHTML = `
+          <td>${r.post_id}</td>
+          <td title="${esc(r.title)}">${esc(r.title)}</td>
+          <td>${nick}</td>
+          <td title="${esc(r.comment || '')}">${cmt}</td>
+          <td><span class="badge ${statusCls}">${statusLabel}</span></td>
+          <td>${r.created_at || ''}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('recordInfo').textContent = `显示 ${tbody.children.length} / ${d.total} 条`;
+      document.getElementById('btnLoadMore').style.display = tbody.children.length < d.total ? 'inline-block' : 'none';
+    });
+}
+
+function loadMoreRecords() {
+  recordOffset += 20;
+  loadRecords(true);
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ============ 日志 ============
+let logAutoScroll = true;
+
+function loadLogs() {
+  fetch('/api/logs?lines=200').then(r=>r.json()).then(d => {
+    const box = document.getElementById('logBox');
+    box.innerHTML = '';
+    d.logs.forEach(line => {
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      if (line.includes('ERROR')) div.className += ' error';
+      else if (line.includes('WARNING')) div.className += ' warning';
+      else if (line.includes('INFO')) div.className += ' info';
+      div.textContent = line;
+      box.appendChild(div);
+    });
+    if (logAutoScroll) box.scrollTop = box.scrollHeight;
+  });
+}
+
+// 日志自动刷新
+setInterval(() => {
+  if (document.getElementById('panel-logs').classList.contains('active')) {
+    loadLogs();
+  }
+}, 3000);
+
+// ============ 舆论监控 ============
+let sentimentOffset = 0;
+
+function loadSentimentConfig() {
+  fetch('/api/sentiment/config').then(r=>r.json()).then(d => {
+    document.getElementById('sentimentKeywords').value = (d.keywords || []).join(',');
+  });
+}
+
+function saveSentimentConfig() {
+  const kw = document.getElementById('sentimentKeywords').value;
+  const keywords = kw.split(',').map(s => s.trim()).filter(s => s);
+  fetch('/api/sentiment/config').then(r=>r.json()).then(old => {
+    old.keywords = keywords;
+    return fetch('/api/sentiment/config', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(old)
+    });
+  }).then(r=>r.json()).then(d => toast(d.msg, d.ok));
+}
+
+function loadSentiment(append = false) {
+  const limit = 20;
+  fetch(`/api/sentiment?limit=${limit}&offset=${sentimentOffset}`)
+    .then(r=>r.json()).then(d => {
+      const tbody = document.getElementById('sentimentBody');
+      if (!append) tbody.innerHTML = '';
+
+      if (d.stats) {
+        document.getElementById('sentimentStats').textContent =
+          `(总计 ${d.stats.total || 0} 条，今日 ${d.stats.today || 0} 条)`;
+      }
+
+      d.records.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td title="${esc(r.post_title)}">${esc(r.post_title)}</td>
+          <td>${esc(r.author)}</td>
+          <td title="${esc(r.comment)}">${esc(r.comment)}</td>
+          <td><span class="badge badge-failed">${esc(r.matched_keywords)}</span></td>
+          <td>${esc(r.comment_time)}</td>
+          <td>${r.captured_at || ''}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      document.getElementById('sentimentInfo').textContent = `显示 ${tbody.children.length} / ${d.total} 条`;
+      document.getElementById('btnSentimentMore').style.display = tbody.children.length < d.total ? 'inline-block' : 'none';
+    });
+}
+
+function loadMoreSentiment() {
+  sentimentOffset += 20;
+  loadSentiment(true);
+}
+
+// ============ KPI 面板 ============
+let kpiChart = null;
+
+function initKpiDate() {
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('kpiDate').value = today;
+}
+initKpiDate();
+
+function loadKpiSummary() {
+  fetch('/api/kpi/summary').then(r=>r.json()).then(d => {
+    document.getElementById('kpiToday').textContent = d.today || 0;
+    document.getElementById('kpiWeek').textContent = d.week || 0;
+    document.getElementById('kpiMonth').textContent = d.month || 0;
+    document.getElementById('kpiAvg').textContent = d.daily_avg || 0;
+  }).catch(()=>{});
+}
+
+function loadKpi() {
+  loadKpiSummary();
+  fetch('/api/kpi?days=30').then(r=>r.json()).then(d => {
+    const data = d.data || [];
+    renderKpiChart(data);
+    renderKpiTable(data);
+  }).catch(()=>{});
+}
+
+function renderKpiChart(data) {
+  const labels = data.map(r => r.date.slice(5)); // MM-DD
+  const autoData = data.map(r => r.auto_comments);
+  const manualData = data.map(r => r.manual_comments);
+  const totalData = data.map(r => r.total);
+
+  const ctx = document.getElementById('kpiChart').getContext('2d');
+
+  if (kpiChart) {
+    kpiChart.destroy();
+  }
+
+  kpiChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: '自动评论',
+          data: autoData,
+          backgroundColor: 'rgba(66,165,245,0.7)',
+          borderColor: 'rgba(66,165,245,1)',
+          borderWidth: 1,
+          stack: 'stack',
+          order: 2,
+        },
+        {
+          label: '官方后台',
+          data: manualData,
+          backgroundColor: 'rgba(255,167,38,0.7)',
+          borderColor: 'rgba(255,167,38,1)',
+          borderWidth: 1,
+          stack: 'stack',
+          order: 2,
+        },
+        {
+          label: '总计趋势',
+          data: totalData,
+          type: 'line',
+          borderColor: '#e94560',
+          backgroundColor: 'rgba(233,69,96,0.1)',
+          borderWidth: 2,
+          pointRadius: 3,
+          pointBackgroundColor: '#e94560',
+          fill: false,
+          tension: 0.3,
+          order: 1,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: '#a0a0b0', font: { size: 12 } }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#a0a0b0', font: { size: 11 }, maxRotation: 45 },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          stacked: true,
+        },
+        y: {
+          ticks: { color: '#a0a0b0', beginAtZero: true },
+          grid: { color: 'rgba(255,255,255,0.08)' },
+          stacked: true,
+        }
+      }
+    }
+  });
+}
+
+function renderKpiTable(data) {
+  const tbody = document.getElementById('kpiBody');
+  tbody.innerHTML = '';
+  // 倒序显示（最新的在前）
+  const reversed = [...data].reverse();
+  reversed.forEach(r => {
+    // 跳过全为0的行
+    if (r.auto_comments === 0 && r.manual_comments === 0) return;
+    const tr = document.createElement('tr');
+    const hasManual = r.manual_comments > 0;
+    tr.innerHTML = `
+      <td>${r.date}</td>
+      <td>${r.auto_comments}</td>
+      <td>${r.manual_comments}</td>
+      <td style="font-weight:600; color:var(--accent)">${r.total}</td>
+      <td>${esc(r.note)}</td>
+      <td>${hasManual ? '<button class="btn" style="padding:4px 12px; font-size:12px; background:var(--red); color:#fff; border-radius:4px;" onclick="deleteKpi(\'' + r.date + '\')">删除</button>' : '-'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function saveKpi() {
+  const date = document.getElementById('kpiDate').value;
+  const count = parseInt(document.getElementById('kpiCount').value) || 0;
+  const note = document.getElementById('kpiNote').value;
+  if (!date) { toast('请选择日期', false); return; }
+  if (count <= 0) { toast('请输入评论条数', false); return; }
+
+  fetch('/api/kpi', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: date, manual_comments: count, note: note })
+  }).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok);
+    if (d.ok) {
+      document.getElementById('kpiCount').value = '';
+      document.getElementById('kpiNote').value = '';
+      loadKpi();
+    }
+  });
+}
+
+function deleteKpi(date) {
+  if (!confirm('确认删除 ' + date + ' 的官方后台记录？')) return;
+  fetch('/api/kpi', {
+    method: 'DELETE', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: date })
+  }).then(r=>r.json()).then(d => {
+    toast(d.msg, d.ok);
+    if (d.ok) loadKpi();
+  });
+}
+
+// 初始加载
+loadComments();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Local secrets and runtime config
+monitor_config.json
+history_comments.txt
+.env
+.env.*
+
+# Runtime data
+*.db
+*.db-*
+*.log
+*.out
+backfill.log
+kpi_report.html
+
+# Generated/package artifacts
+__pycache__/
+*.py[cod]
+.DS_Store
+comment-system-package.zip
+
+# Local editor / assistant files
+.claude/
+
+# Private notes and unrelated local dashboards
+给同事的提示词.md
+sheets_dashboard.py

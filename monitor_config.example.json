@@ -1,0 +1,87 @@
+{
+  "google_sheets": {
+    "webhook_url": ""
+  },
+  "ai": {
+    "provider": "file",
+    "api_key": "",
+    "model": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com/v1",
+    "prompt_template": "主要学习评论库里的真实评论，短、粗糙、直给，不要像正常点评。每次换开头和句式，不要照抄样本，不要复述标题，不要解释。"
+  },
+  "browser": {
+    "headless": true,
+    "locale": "zh-CN",
+    "slow_mo": 50,
+    "timezone": "Asia/Shanghai",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "viewport_height": 800,
+    "viewport_width": 1280
+  },
+  "database": {
+    "db_path": "monitor_comments.db"
+  },
+  "forum": {
+    "base_url": "https://example.com",
+    "comment_area_selector": "#comment-form",
+    "comment_form_selector": "#comment-form",
+    "comment_input_selector": "textarea#textarea",
+    "list_page_url": "https://example.com/category/demo/",
+    "list_page_pattern": "https://example.com/category/demo/{page}/",
+    "max_pages": 10,
+    "nickname_input_selector": "input#author",
+    "popup_close_selector": ".close-btn, .popup-close, [class*='close']",
+    "post_id_pattern": "/archives/(\\d+)/",
+    "post_link_selector": "article a[href*='/archives/']",
+    "post_title_selector": "h2.post-card-title",
+    "submit_button_selector": "input#submit",
+    "success_indicator_selector": ".comment-list .comment-body"
+  },
+  "logging": {
+    "log_file": "comment_poster.log",
+    "log_level": "INFO"
+  },
+  "posting": {
+    "comment_generation_mode": "file",
+    "history_comments_file": "history_comments.txt",
+    "max_posts_per_run": 9999,
+    "nickname_length_max": 8,
+    "nickname_length_min": 5
+  },
+  "sentiment": {
+    "db_path": "sentiment_monitor.db",
+    "enabled": true,
+    "keywords": [
+      "卡",
+      "看不了",
+      "打不开",
+      "加载慢",
+      "黑屏",
+      "无法播放",
+      "404",
+      "挂了",
+      "失效",
+      "过期",
+      "没声音",
+      "画质差",
+      "模糊"
+    ]
+  },
+  "timing": {
+    "max_action_interval": 3,
+    "max_between_posts": 20,
+    "max_page_load_wait": 5,
+    "max_scroll_pause": 1.5,
+    "max_typing_delay": 150,
+    "min_action_interval": 1,
+    "min_between_posts": 8,
+    "min_page_load_wait": 2,
+    "min_scroll_pause": 0.5,
+    "min_typing_delay": 50,
+    "monitor_interval_minutes": 10,
+    "navigation_timeout_ms": 60000,
+    "navigation_retries": 3,
+    "navigation_retry_wait": 5,
+    "selector_timeout_ms": 15000
+  }
+}
