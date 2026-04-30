@@ -7,6 +7,7 @@ dashboard.py - 评论系统 Web 控制面板
 """
 
 import json
+import resource
 import sqlite3
 import threading
 import time
@@ -20,11 +21,25 @@ from comment_poster import (
     KpiDatabase,
     PostDatabase,
     SentimentDatabase,
+    db_connection,
     load_config,
     logger,
     run_posting_cycle,
     setup_logging,
 )
+
+
+def raise_open_file_limit(target: int = 4096) -> None:
+    """提高后台服务文件句柄上限，避免 Playwright/SQLite 长时间运行耗尽。"""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
+    except Exception:
+        pass
+
+
+raise_open_file_limit()
 
 app = Flask(__name__)
 
@@ -266,7 +281,7 @@ def api_records():
     offset = int(request.args.get("offset", 0))
 
     try:
-        with sqlite3.connect(db_path) as conn:
+        with db_connection(db_path) as conn:
             conn.row_factory = sqlite3.Row
             if status_filter == "all":
                 rows = conn.execute(

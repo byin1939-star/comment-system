@@ -14,6 +14,7 @@ import time
 import ssl
 import urllib.request
 import urllib.error
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,13 @@ def setup_logging(config: dict) -> None:
     formatter = logging.Formatter(
         "[%(asctime)s] %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
+
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(formatter)
@@ -77,6 +85,20 @@ def load_config(config_path: str = "monitor_config.json") -> dict:
 # ============================================================
 
 
+@contextmanager
+def db_connection(db_path: str):
+    """打开 SQLite 连接，并确保每次使用后关闭文件句柄。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 class PostDatabase:
     """管理已处理帖子的 SQLite 数据库，防止重复评论"""
 
@@ -85,7 +107,7 @@ class PostDatabase:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             # 检查旧表是否存在且用的是 post_id 主键
             cursor = conn.execute("SELECT sql FROM sqlite_master WHERE name='processed_posts'")
             row = cursor.fetchone()
@@ -109,7 +131,6 @@ class PostDatabase:
                     SELECT post_id, title, url, comment, nickname, status, created_at FROM processed_posts_old
                 """)
                 conn.execute("DROP TABLE processed_posts_old")
-                conn.commit()
             elif not row:
                 conn.execute("""
                     CREATE TABLE processed_posts (
@@ -123,11 +144,10 @@ class PostDatabase:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                conn.commit()
 
     def is_processed(self, post_id: str) -> bool:
         """检查帖子是否已处理"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             row = conn.execute(
                 "SELECT 1 FROM processed_posts WHERE post_id = ?", (post_id,)
             ).fetchone()
@@ -135,7 +155,7 @@ class PostDatabase:
 
     def get_used_comments(self, post_id: str) -> list[str]:
         """获取某帖子已使用的评论内容，用于去重"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT comment FROM processed_posts WHERE post_id=? AND status='success'",
                 (post_id,),
@@ -152,18 +172,17 @@ class PostDatabase:
         status: str = "success",
     ) -> None:
         """记录已处理的帖子（允许同一帖子多次评论）"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             conn.execute(
                 """INSERT INTO processed_posts
                    (post_id, title, url, comment, nickname, status)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (post_id, title, url, comment, nickname, status),
             )
-            conn.commit()
 
     def get_stats(self) -> dict:
         """获取统计信息"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM processed_posts").fetchone()[0]
             success = conn.execute(
                 "SELECT COUNT(*) FROM processed_posts WHERE status='success'"
@@ -194,7 +213,7 @@ class SentimentDatabase:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sentiment_comments (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,12 +227,11 @@ class SentimentDatabase:
                     captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
 
     def add(self, post_id: str, post_title: str, post_url: str,
             author: str, comment: str, matched_keywords: list, comment_time: str) -> None:
         """记录一条匹配的舆论评论"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             # 先检查是否已存在（同帖子+同作者+同内容 = 重复）
             exists = conn.execute(
                 "SELECT 1 FROM sentiment_comments WHERE post_id=? AND author=? AND comment=?",
@@ -228,11 +246,10 @@ class SentimentDatabase:
                 (post_id, post_title, post_url, author, comment,
                  ",".join(matched_keywords), comment_time),
             )
-            conn.commit()
 
     def get_records(self, limit: int = 50, offset: int = 0) -> tuple[list, int]:
         """获取舆论记录"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             total = conn.execute("SELECT COUNT(*) FROM sentiment_comments").fetchone()[0]
             rows = conn.execute(
@@ -242,7 +259,7 @@ class SentimentDatabase:
         return [dict(r) for r in rows], total
 
     def get_stats(self) -> dict:
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM sentiment_comments").fetchone()[0]
             today = conn.execute(
                 "SELECT COUNT(*) FROM sentiment_comments WHERE date(captured_at)=date('now')"
@@ -264,7 +281,7 @@ class KpiDatabase:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS kpi_manual (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,11 +292,10 @@ class KpiDatabase:
                     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.commit()
 
     def add_or_update(self, date: str, manual_comments: int, note: str = "") -> None:
         """添加或更新某天的手动评论数"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             exists = conn.execute(
                 "SELECT 1 FROM kpi_manual WHERE date=?", (date,)
             ).fetchone()
@@ -293,13 +309,11 @@ class KpiDatabase:
                     "INSERT INTO kpi_manual (date, manual_comments, note) VALUES (?, ?, ?)",
                     (date, manual_comments, note),
                 )
-            conn.commit()
 
     def delete_record(self, date: str) -> bool:
         """删除某天的手动记录"""
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM kpi_manual WHERE date=?", (date,))
-            conn.commit()
             return cursor.rowcount > 0
 
     def get_daily_data(self, days: int = 30) -> list[dict]:
@@ -310,7 +324,7 @@ class KpiDatabase:
         # 1. 从 processed_posts 聚合自动评论数
         auto_stats = {}
         try:
-            with sqlite3.connect(self.posts_db_path) as conn:
+            with db_connection(self.posts_db_path) as conn:
                 rows = conn.execute(
                     """SELECT date(created_at) as d, COUNT(*) as c
                        FROM processed_posts
@@ -326,7 +340,7 @@ class KpiDatabase:
 
         # 2. 从 kpi_manual 读取手动记录
         manual_stats = {}
-        with sqlite3.connect(self.db_path) as conn:
+        with db_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT date, manual_comments, note FROM kpi_manual WHERE date >= date('now', ?)",
                 (f"-{days} days",),

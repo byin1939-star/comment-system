@@ -21,6 +21,8 @@ fi
 # 切换到脚本所在目录
 cd "$(dirname "$0")"
 
+ulimit -n 4096 2>/dev/null || true
+
 if [ ! -f monitor_config.json ] && [ -f monitor_config.example.json ]; then
     cp monitor_config.example.json monitor_config.json
     echo "[提示] 已生成本地配置: monitor_config.json"
