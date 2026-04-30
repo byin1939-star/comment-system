@@ -1515,9 +1515,14 @@ def run_posting_cycle(config: dict) -> dict:
         # 1. 抓取帖子列表（内部自动翻页+关闭弹窗）
         posts = fetch_post_list(page, config)
 
-        # 2. 不再跳过已评论的帖子，允许重复评论同一帖子（但评论内容不重复）
-        new_posts = posts
-        logger.info(f"待处理帖子: {len(new_posts)} / 总帖子: {len(posts)}")
+        # 2. 默认允许下一轮继续处理同一批帖子，实现循环评论。
+        repeat_processed = posting_cfg.get("repeat_processed_posts", True)
+        if repeat_processed:
+            new_posts = posts
+            logger.info(f"循环模式已开启，待处理帖子: {len(new_posts)} / 总帖子: {len(posts)}")
+        else:
+            new_posts = [post for post in posts if not db.is_processed(post["post_id"])]
+            logger.info(f"去重模式已开启，待处理帖子: {len(new_posts)} / 总帖子: {len(posts)}")
 
         # 3. 限制每轮处理数量
         posts_to_process = new_posts[:max_posts]

@@ -54,6 +54,14 @@ def parse_args():
     return parser.parse_args()
 
 
+def get_cycle_interval_seconds(config):
+    timing = config.get("timing", {})
+    seconds = timing.get("monitor_interval_seconds")
+    if seconds in (None, ""):
+        seconds = float(timing.get("monitor_interval_minutes", 10)) * 60
+    return max(1, int(float(seconds)))
+
+
 def main():
     global _running
 
@@ -91,7 +99,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    interval_minutes = config.get("timing", {}).get("monitor_interval_minutes", 10)
+    interval_seconds = get_cycle_interval_seconds(config)
 
     if args.once:
         # 单次执行
@@ -100,7 +108,7 @@ def main():
         logger.info("单次执行完成")
     else:
         # 持续监控循环
-        logger.info(f"持续监控模式，间隔 {interval_minutes} 分钟")
+        logger.info(f"持续监控模式，间隔 {interval_seconds} 秒")
         cycle = 0
 
         while _running:
@@ -115,10 +123,10 @@ def main():
             if not _running:
                 break
 
-            logger.info(f"等待 {interval_minutes} 分钟后开始下一轮...")
+            logger.info(f"等待 {interval_seconds} 秒后开始下一轮...")
 
             # 分段 sleep 以便及时响应停止信号
-            for _ in range(interval_minutes * 60):
+            for _ in range(interval_seconds):
                 if not _running:
                     break
                 time.sleep(1)

@@ -79,10 +79,11 @@ class DequeHandler(logging.Handler):
 
 def monitor_loop(config):
     """后台持续监控循环"""
-    timing = config.get("timing", {})
-    interval = timing.get("monitor_interval_minutes", 10)
-
     while monitor_state["running"]:
+        config = load_config(CONFIG_PATH)
+        timing = config.get("timing", {})
+        interval_seconds = get_cycle_interval_seconds(timing)
+
         monitor_state["cycle_count"] += 1
         monitor_state["current_action"] = f"第 {monitor_state['cycle_count']} 轮执行中"
         try:
@@ -95,13 +96,21 @@ def monitor_loop(config):
         if not monitor_state["running"]:
             break
 
-        monitor_state["current_action"] = f"等待 {interval} 分钟..."
-        for _ in range(interval * 60):
+        monitor_state["current_action"] = f"等待 {interval_seconds} 秒后下一轮..."
+        for _ in range(interval_seconds):
             if not monitor_state["running"]:
                 break
             time.sleep(1)
 
     monitor_state["current_action"] = "idle"
+
+
+def get_cycle_interval_seconds(timing: dict) -> int:
+    """兼容旧的分钟配置，同时支持秒级循环间隔。"""
+    seconds = timing.get("monitor_interval_seconds")
+    if seconds in (None, ""):
+        seconds = float(timing.get("monitor_interval_minutes", 10)) * 60
+    return max(1, int(float(seconds)))
 
 
 # ============================================================

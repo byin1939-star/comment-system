@@ -141,11 +141,31 @@ tr:hover td { background: rgba(233,69,96,0.05); }
     <div class="card">
       <div class="card-title">操作</div>
       <div class="btn-group">
-        <button class="btn btn-start" id="btnStart" onclick="doStart()">启动监控</button>
-        <button class="btn btn-stop" id="btnStop" onclick="doStop()" disabled>停止监控</button>
+        <button class="btn btn-start" id="btnStart" onclick="doStart()">启动循环</button>
+        <button class="btn btn-stop" id="btnStop" onclick="doStop()" disabled>停止循环</button>
         <button class="btn btn-once" id="btnOnce" onclick="doRunOnce()">单次执行</button>
       </div>
       <div class="action-text" id="actionText">就绪</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">循环设置</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">每轮间隔（秒）</label>
+          <input type="number" class="form-input" id="loopIntervalSeconds" min="1" step="1" value="60">
+        </div>
+        <div class="form-group">
+          <label class="form-label">重复评论已处理帖子</label>
+          <select class="form-select" id="repeatProcessedPosts">
+            <option value="true">开启：每轮都重新评论</option>
+            <option value="false">关闭：只评论新帖子</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-save" onclick="saveLoopConfig()">保存循环设置</button>
+      </div>
     </div>
 
     <div class="card" id="errorCard" style="display:none; border-color: var(--red);">
@@ -397,6 +417,33 @@ function doRunOnce() {
   fetch('/api/run-once', {method:'POST'}).then(r=>r.json()).then(d => {
     toast(d.msg, d.ok); refreshStatus();
   });
+}
+
+function loadLoopConfig() {
+  fetch('/api/config').then(r=>r.json()).then(cfg => {
+    const timing = cfg.timing || {};
+    const posting = cfg.posting || {};
+    const seconds = timing.monitor_interval_seconds || Math.round((timing.monitor_interval_minutes || 10) * 60);
+    document.getElementById('loopIntervalSeconds').value = seconds;
+    document.getElementById('repeatProcessedPosts').value = posting.repeat_processed_posts === false ? 'false' : 'true';
+  }).catch(() => {});
+}
+
+function saveLoopConfig() {
+  fetch('/api/config').then(r=>r.json()).then(cfg => {
+    cfg.timing = cfg.timing || {};
+    cfg.posting = cfg.posting || {};
+    cfg.timing.monitor_interval_seconds = Math.max(
+      1,
+      parseInt(document.getElementById('loopIntervalSeconds').value || '60', 10)
+    );
+    cfg.posting.repeat_processed_posts = document.getElementById('repeatProcessedPosts').value === 'true';
+    return fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(cfg)
+    });
+  }).then(r=>r.json()).then(d => toast(d.msg, d.ok));
 }
 
 // ============ AI 配置 ============
@@ -772,6 +819,7 @@ function deleteKpi(date) {
 }
 
 // 初始加载
+loadLoopConfig();
 loadComments();
 </script>
 </body>
