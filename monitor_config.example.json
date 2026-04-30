@@ -47,6 +47,8 @@
     "max_posts_per_run": 9999,
     "nickname_length_max": 8,
     "nickname_length_min": 5,
+    "post_date_mode": "recent",
+    "post_recent_days": 7,
     "repeat_processed_posts": true
   },
   "sentiment": {

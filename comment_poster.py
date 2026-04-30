@@ -983,12 +983,46 @@ def _parse_post_date(date_text: str) -> Optional[datetime]:
     return None
 
 
-def _extract_posts_from_page(page: Page, config: dict, yesterday, seen_ids: set) -> tuple[list[dict], bool]:
+def _build_post_date_filter(config: dict) -> dict:
+    """根据配置生成帖子日期过滤规则。"""
+    posting_cfg = config.get("posting", {})
+    mode = posting_cfg.get("post_date_mode", "yesterday")
+    today = datetime.now().date()
+
+    if mode == "today":
+        return {"mode": "today", "start": today, "end": today, "label": f"{today}（今天）"}
+    if mode == "recent":
+        days = max(1, int(posting_cfg.get("post_recent_days", 7)))
+        start = today - timedelta(days=days - 1)
+        return {"mode": "recent", "start": start, "end": today, "label": f"最近 {days} 天"}
+    if mode == "all":
+        return {"mode": "all", "start": None, "end": None, "label": "不限日期"}
+
+    yesterday = today - timedelta(days=1)
+    return {"mode": "yesterday", "start": yesterday, "end": yesterday, "label": f"{yesterday}（昨天）"}
+
+
+def _post_matches_date(post_date: datetime, date_filter: dict) -> bool:
+    """判断帖子日期是否在目标范围内。"""
+    if date_filter["mode"] == "all":
+        return True
+    post_day = post_date.date()
+    return date_filter["start"] <= post_day <= date_filter["end"]
+
+
+def _should_stop_paging(post_date: datetime, date_filter: dict) -> bool:
+    """列表按时间倒序时，遇到早于目标范围的帖子即可停止翻页。"""
+    if date_filter["mode"] == "all":
+        return False
+    return post_date.date() < date_filter["start"]
+
+
+def _extract_posts_from_page(page: Page, config: dict, date_filter: dict, seen_ids: set) -> tuple[list[dict], bool]:
     """
     从当前已加载的列表页提取帖子。
 
     返回: (帖子列表, 是否应继续翻页)
-    - 如果当前页已经出现比昨天更早的帖子，说明昨天的帖子已全部抓完，停止翻页。
+    - 如果当前页已经出现早于目标范围的帖子，说明目标范围已抓完，停止翻页。
     """
     forum_cfg = config["forum"]
     id_pattern = forum_cfg.get("post_id_pattern", r"/archives/(\d+)/")
@@ -1023,13 +1057,12 @@ def _extract_posts_from_page(page: Page, config: dict, yesterday, seen_ids: set)
         if post_date is None:
             continue
 
-        # 比昨天更早的帖子 → 标记停止翻页
-        if post_date.date() < yesterday:
+        # 早于目标范围的帖子 → 标记停止翻页
+        if _should_stop_paging(post_date, date_filter):
             found_older = True
             continue
 
-        # 跳过今天的帖子
-        if post_date.date() != yesterday:
+        if not _post_matches_date(post_date, date_filter):
             continue
 
         # 提取标题
@@ -1073,9 +1106,9 @@ def _extract_posts_from_page(page: Page, config: dict, yesterday, seen_ids: set)
 
 def fetch_post_list(page: Page, config: dict) -> list[dict]:
     """
-    从分类页逐页抓取**昨天**发布的帖子。
+    从分类页逐页抓取目标日期范围内的帖子。
 
-    自动翻页，直到出现比昨天更早的帖子为止。
+    自动翻页，直到出现早于目标范围的帖子为止。
 
     分页 URL 格式：/category/mrds/{page}/
     """
@@ -1084,8 +1117,8 @@ def fetch_post_list(page: Page, config: dict) -> list[dict]:
     page_pattern = forum_cfg.get("list_page_pattern", "")
     max_pages = forum_cfg.get("max_pages", 10)
 
-    yesterday = (datetime.now() - timedelta(days=1)).date()
-    logger.info(f"目标日期: {yesterday}（只抓昨天的帖子）")
+    date_filter = _build_post_date_filter(config)
+    logger.info(f"目标范围: {date_filter['label']}")
 
     all_posts = []
     seen_ids = set()
@@ -1120,19 +1153,19 @@ def fetch_post_list(page: Page, config: dict) -> list[dict]:
         if page_num == 1:
             dismiss_popups(page, config)
 
-        posts, should_continue = _extract_posts_from_page(page, config, yesterday, seen_ids)
+        posts, should_continue = _extract_posts_from_page(page, config, date_filter, seen_ids)
         all_posts.extend(posts)
 
-        logger.info(f"第 {page_num} 页找到 {len(posts)} 个昨天的帖子")
+        logger.info(f"第 {page_num} 页找到 {len(posts)} 个目标帖子")
 
         if not should_continue:
-            logger.info(f"已出现更早日期的帖子，停止翻页")
+            logger.info(f"已出现早于目标范围的帖子，停止翻页")
             break
 
         # 翻页间随机等待
         random_sleep(1, 3)
 
-    logger.info(f"共抓取到 {len(all_posts)} 个昨天的帖子（去重后）")
+    logger.info(f"共抓取到 {len(all_posts)} 个目标帖子（去重后）")
     return all_posts
 
 

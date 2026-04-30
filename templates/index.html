@@ -163,6 +163,21 @@ tr:hover td { background: rgba(233,69,96,0.05); }
           </select>
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">帖子日期范围</label>
+          <select class="form-select" id="postDateMode">
+            <option value="recent">最近 N 天</option>
+            <option value="today">只抓今天</option>
+            <option value="yesterday">只抓昨天</option>
+            <option value="all">不限日期</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">最近天数</label>
+          <input type="number" class="form-input" id="postRecentDays" min="1" step="1" value="7">
+        </div>
+      </div>
       <div class="btn-group">
         <button class="btn btn-save" onclick="saveLoopConfig()">保存循环设置</button>
       </div>
@@ -426,6 +441,8 @@ function loadLoopConfig() {
     const seconds = timing.monitor_interval_seconds || Math.round((timing.monitor_interval_minutes || 10) * 60);
     document.getElementById('loopIntervalSeconds').value = seconds;
     document.getElementById('repeatProcessedPosts').value = posting.repeat_processed_posts === false ? 'false' : 'true';
+    document.getElementById('postDateMode').value = posting.post_date_mode || 'recent';
+    document.getElementById('postRecentDays').value = posting.post_recent_days || 7;
   }).catch(() => {});
 }
 
@@ -438,6 +455,11 @@ function saveLoopConfig() {
       parseInt(document.getElementById('loopIntervalSeconds').value || '60', 10)
     );
     cfg.posting.repeat_processed_posts = document.getElementById('repeatProcessedPosts').value === 'true';
+    cfg.posting.post_date_mode = document.getElementById('postDateMode').value;
+    cfg.posting.post_recent_days = Math.max(
+      1,
+      parseInt(document.getElementById('postRecentDays').value || '7', 10)
+    );
     return fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
