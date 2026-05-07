@@ -406,7 +406,7 @@ class KpiDatabase:
 
 
 def _load_sample_comments(config: dict, count: int = 15) -> list[str]:
-    """从评论库随机抽取若干条作为风格样本"""
+    """从评论库随机抽取若干条作为风格样本，优先给 AI 短碎样本。"""
     posting_cfg = config.get("posting", {})
     filepath = posting_cfg.get("history_comments_file", "history_comments.txt")
     path = Path(filepath)
@@ -419,7 +419,25 @@ def _load_sample_comments(config: dict, count: int = 15) -> list[str]:
     ]
     if not lines:
         return []
-    return random.sample(lines, min(count, len(lines)))
+
+    max_short_len = int(posting_cfg.get("short_comment_sample_max_len", 14))
+    short_lines = [line for line in lines if 2 <= _comment_len(line) <= max_short_len]
+    if not short_lines:
+        return random.sample(lines, min(count, len(lines)))
+
+    short_count = min(len(short_lines), max(1, int(count * 0.75)))
+    selected = random.sample(short_lines, short_count)
+    rest = [line for line in lines if line not in selected]
+    if rest and len(selected) < count:
+        selected.extend(random.sample(rest, min(count - len(selected), len(rest))))
+    random.shuffle(selected)
+    return selected
+
+
+def _comment_len(text: str) -> int:
+    """按去掉标点和空白后的长度判断评论是否短碎。"""
+    compact = re.sub(r"[\s，。！？,.!?\-—~～…、：:；;\"'“”‘’`]+", "", text or "")
+    return len(compact)
 
 
 def _has_visible_text(text: str) -> bool:
@@ -511,7 +529,7 @@ def _is_bad_ai_comment(text: str, samples: list[str] = None) -> bool:
 
     if text in samples:
         return True
-    if len(text) < 4 or len(text) > 36:
+    if len(text) < 2 or len(text) > 24:
         return True
     compact = re.sub(r"[\s，。！？,.!?\-—~～…]+", "", text)
     if any(compact.startswith(prefix) for prefix in generic_starts):
@@ -607,12 +625,12 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
         sample_prefixes = random.sample(sample_prefixes, min(10, len(sample_prefixes)))
 
         style_cards = [
-            "主要学评论库，不要发明固定网梗",
-            "像评论库里的短句，直接、粗糙、欲望很直白",
-            "学样本的词序和节奏，不要用同一个开头",
-            "从样本里换一种开头方式，别总感叹",
-            "像老帖吧友随手回，别像 AI 套话",
-            "短一点，狠一点，但别复读固定口癖",
+            "像评论区随手敲两个词，不围着标题写作文",
+            "可以跑题，可以玩梗，可以像弹幕一样短",
+            "学样本里的碎片感，别写完整主谓宾",
+            "像贴吧老哥/路人水评论，短、糙、随机",
+            "热点梗、生活碎碎念、欲望短句都可以混着来",
+            "宁可像废话，也不要像认真点评",
         ]
         chosen_style = random.choice(style_cards)
         custom_prompt = _format_prompt_template(
@@ -621,16 +639,17 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
 
         system_prompt = (
             "你是中文论坛/贴吧里混久了的老用户，只写一条短评论。\n"
-            "目标：优先模仿评论库里的真实样本，不像 AI、不像客服、不像正常点评。\n"
+            "目标：优先模仿评论库里的真实样本，像真人随手水一句，不像 AI、不像客服、不像正常点评。\n"
             "硬性要求：\n"
-            "1. 6-22 个中文字符左右，宁可短，不要完整作文。\n"
-            "2. 学样本的开头、词序、粗糙感和直给语气，但不要照抄样本。\n"
-            "3. 只抓标题里的一个点回应，不要复述整句标题。\n"
-            "4. 不要连续使用同类开头，尤其别复读固定网梗。\n"
-            "5. 禁止这些偷懒开头：绷不住了、不是哥们、我服了、哈人、离谱。\n"
-            "6. 禁止模板腔：这标题、好文章、感谢分享、支持一下、值得一看、不错。\n"
-            "7. 不要道德评价、不要解释、不要序号、不要引号，不要 emoji。\n"
-            "8. 只输出评论内容本身。"
+            "1. 2-14 个中文字符优先，最多别超过 20 个字。\n"
+            "2. 不要完整主谓宾，不要像正常人认真点评，别写成作文。\n"
+            "3. 不一定要贴合标题，允许跑题、玩梗、热点、生活碎片、口头禅。\n"
+            "4. 学样本的开头、词序、粗糙感和随机感，但不要照抄样本。\n"
+            "5. 不要连续使用同类开头，尤其别复读固定网梗。\n"
+            "6. 禁止这些偷懒开头：绷不住了、不是哥们、我服了、哈人、离谱。\n"
+            "7. 禁止模板腔：这标题、好文章、感谢分享、支持一下、值得一看、不错。\n"
+            "8. 不要道德评价、不要解释、不要序号、不要引号，不要 emoji。\n"
+            "9. 只输出评论内容本身。"
         )
 
         user_prompt = (
@@ -642,7 +661,7 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
         )
         if custom_prompt:
             user_prompt += f"【额外风格要求】\n{custom_prompt}\n\n"
-        user_prompt += "现在生成一条更像评论库的新短评：别正经，别礼貌，别用固定网梗开头，别照抄样本。"
+        user_prompt += "现在生成一条更像评论库的新短评：短到像弹幕，可以跑题，别正经，别礼貌，别照抄样本。"
 
         # 过滤模板腔和重复样本，最多重试4次
         result = ""
@@ -653,9 +672,9 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 80,
-                "temperature": 1.15,
-                "top_p": 0.92,
+                "max_tokens": 40,
+                "temperature": 1.25,
+                "top_p": 0.95,
             }
             if provider == "deepseek" and model.startswith("deepseek-v4"):
                 request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
@@ -730,7 +749,7 @@ def _generate_via_gemini(title: str, context: str, ai_cfg: dict, samples: list[s
 
 
 def _load_random_comment(filepath: str) -> str:
-    """从文件中随机抽取一行评论"""
+    """从文件中随机抽取一行评论，优先抽短句。"""
     path = Path(filepath)
     if not path.exists():
         logger.warning(f"评论文件不存在: {filepath}，使用默认评论")
@@ -740,6 +759,9 @@ def _load_random_comment(filepath: str) -> str:
     if not lines:
         return "好文章，感谢分享！"
 
+    short_lines = [line for line in lines if 2 <= _comment_len(line) <= 14]
+    if short_lines and random.random() < 0.85:
+        return random.choice(short_lines)
     return random.choice(lines)
 
 
