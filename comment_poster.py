@@ -17,7 +17,7 @@ import urllib.error
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from playwright.sync_api import (
     Browser,
@@ -33,6 +33,10 @@ from playwright.sync_api import (
 # ============================================================
 
 logger = logging.getLogger("comment_poster")
+
+
+class StopRequested(Exception):
+    """用户请求立即停止当前流程。"""
 
 
 def setup_logging(config: dict) -> None:
@@ -853,11 +857,40 @@ def generate_nickname(min_len: int = 5, max_len: int = 8) -> str:
 # ============================================================
 
 
-def random_sleep(min_sec: float, max_sec: float) -> None:
+def _stop_checker(config: dict = None) -> Callable[[], bool]:
+    """读取由控制面板注入的停止检查函数。"""
+    if not config:
+        return lambda: False
+    checker = config.get("_should_stop")
+    return checker if callable(checker) else lambda: False
+
+
+def _raise_if_stopped(config: dict = None) -> None:
+    if _stop_checker(config)():
+        raise StopRequested("用户请求停止")
+
+
+def _sleep_interruptibly(seconds: float, config: dict = None, step: float = 0.2) -> None:
+    """可中断 sleep，避免停止按钮卡在长等待里。"""
+    end = time.time() + max(0.0, seconds)
+    while time.time() < end:
+        _raise_if_stopped(config)
+        time.sleep(min(step, max(0.0, end - time.time())))
+    _raise_if_stopped(config)
+
+
+def _register_runtime(config: dict, page=None, context=None, browser=None) -> None:
+    """把当前 Playwright 对象状态交给控制面板。"""
+    callback = config.get("_register_runtime") if config else None
+    if callable(callback):
+        callback(page, context, browser)
+
+
+def random_sleep(min_sec: float, max_sec: float, config: dict = None) -> None:
     """随机等待"""
     delay = random.uniform(min_sec, max_sec)
     logger.debug(f"随机等待 {delay:.1f} 秒")
-    time.sleep(delay)
+    _sleep_interruptibly(delay, config)
 
 
 def simulate_human_scroll(page: Page, config: dict) -> None:
@@ -873,19 +906,21 @@ def simulate_human_scroll(page: Page, config: dict) -> None:
     while current < total_height:
         scroll_step = random.randint(200, 500)
         current = min(current + scroll_step, total_height)
+        _raise_if_stopped(config)
         page.evaluate(f"window.scrollTo(0, {current})")
-        random_sleep(min_pause, max_pause)
+        random_sleep(min_pause, max_pause, config)
 
     logger.debug("页面滚动到底部完成")
 
 
-def simulate_mouse_movement(page: Page) -> None:
+def simulate_mouse_movement(page: Page, config: dict = None) -> None:
     """模拟随机鼠标移动"""
     for _ in range(random.randint(2, 5)):
+        _raise_if_stopped(config)
         x = random.randint(100, 800)
         y = random.randint(100, 600)
         page.mouse.move(x, y, steps=random.randint(5, 15))
-        time.sleep(random.uniform(0.1, 0.3))
+        random_sleep(0.1, 0.3, config)
 
 
 def _get_timing_int(config: dict, key: str, default: int) -> int:
@@ -924,6 +959,32 @@ def _page_has_content(page: Page, required_selector: str = "") -> bool:
         return False
 
 
+def _wait_for_selector_interruptibly(
+    page: Page,
+    selector: str,
+    *,
+    timeout: int,
+    config: dict,
+) -> None:
+    """可中断的 selector 等待。"""
+    deadline = time.time() + max(0, timeout) / 1000
+    last_error = None
+    while time.time() < deadline:
+        _raise_if_stopped(config)
+        try:
+            page.wait_for_selector(selector, timeout=500)
+            _raise_if_stopped(config)
+            return
+        except PlaywrightTimeoutError as exc:
+            last_error = exc
+        except PlaywrightError as exc:
+            _raise_if_stopped(config)
+            last_error = exc
+            break
+    _raise_if_stopped(config)
+    raise last_error or PlaywrightTimeoutError(f"等待选择器超时: {selector}")
+
+
 def _safe_goto(
     page: Page,
     url: str,
@@ -939,31 +1000,45 @@ def _safe_goto(
     目标站偶发慢响应或连接被重置时，不让一次 goto 直接打断整轮流程。
     """
     timeout_ms = _get_timing_int(config, "navigation_timeout_ms", 60000)
+    poll_timeout_ms = max(1000, _get_timing_int(config, "navigation_poll_timeout_ms", 3000))
     retries = max(1, _get_timing_int(config, "navigation_retries", 3))
     retry_wait = max(0.0, _get_timing_float(config, "navigation_retry_wait", 5.0))
     last_error = None
 
     for attempt in range(1, retries + 1):
-        try:
-            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-            return
-        except PlaywrightTimeoutError as exc:
-            last_error = exc
-            if _page_has_content(page, required_selector):
-                _stop_loading(page)
-                logger.warning(
-                    f"{purpose}导航超时，但已检测到页面内容，继续处理: {url}"
+        _raise_if_stopped(config)
+        deadline = time.time() + max(1, timeout_ms) / 1000
+        while time.time() < deadline:
+            _raise_if_stopped(config)
+            try:
+                page.goto(
+                    url,
+                    wait_until=wait_until,
+                    timeout=min(poll_timeout_ms, max(1000, int((deadline - time.time()) * 1000))),
                 )
+                _raise_if_stopped(config)
                 return
-            logger.warning(
-                f"{purpose}导航超时({attempt}/{retries}): {url}"
-            )
-        except PlaywrightError as exc:
-            last_error = exc
-            message = str(exc).splitlines()[0]
-            logger.warning(
-                f"{purpose}导航失败({attempt}/{retries}): {message}"
-            )
+            except PlaywrightTimeoutError as exc:
+                last_error = exc
+                if _page_has_content(page, required_selector):
+                    _stop_loading(page)
+                    logger.warning(
+                        f"{purpose}导航超时，但已检测到页面内容，继续处理: {url}"
+                    )
+                    return
+                _stop_loading(page)
+                continue
+            except PlaywrightError as exc:
+                _raise_if_stopped(config)
+                last_error = exc
+                message = str(exc).splitlines()[0]
+                logger.warning(
+                    f"{purpose}导航失败({attempt}/{retries}): {message}"
+                )
+                break
+
+        if isinstance(last_error, PlaywrightTimeoutError):
+            logger.warning(f"{purpose}导航超时({attempt}/{retries}): {url}")
 
         if attempt < retries:
             _stop_loading(page)
@@ -971,7 +1046,7 @@ def _safe_goto(
                 page.goto("about:blank", timeout=5000)
             except Exception:
                 pass
-            time.sleep(retry_wait)
+            _sleep_interruptibly(retry_wait, config)
 
     raise last_error or RuntimeError(f"{purpose}导航失败: {url}")
 
@@ -988,17 +1063,19 @@ def dismiss_popups(page: Page, config: dict) -> None:
 
     if close_sel:
         for sel in close_sel.split(","):
+            _raise_if_stopped(config)
             sel = sel.strip()
             try:
                 btn = page.query_selector(sel)
                 if btn and btn.is_visible():
                     btn.click()
                     logger.debug(f"关闭弹窗: {sel}")
-                    time.sleep(0.5)
+                    _sleep_interruptibly(0.5, config)
             except Exception:
                 pass
 
     # 通用：移除遮罩层
+    _raise_if_stopped(config)
     page.evaluate("""
         document.querySelectorAll('[class*="popup"], [class*="modal"], [class*="overlay"]')
             .forEach(el => { if (el.style) el.style.display = 'none'; });
@@ -1064,7 +1141,9 @@ def _extract_posts_from_page(page: Page, config: dict, date_filter: dict, seen_i
     id_pattern = forum_cfg.get("post_id_pattern", r"/archives/(\d+)/")
 
     try:
-        page.wait_for_selector("article", timeout=15000)
+        _wait_for_selector_interruptibly(page, "article", timeout=15000, config=config)
+    except StopRequested:
+        raise
     except Exception:
         return [], False
 
@@ -1160,6 +1239,7 @@ def fetch_post_list(page: Page, config: dict) -> list[dict]:
     seen_ids = set()
 
     for page_num in range(1, max_pages + 1):
+        _raise_if_stopped(config)
         # 构建分页 URL
         if page_num == 1:
             url = forum_cfg["list_page_url"]
@@ -1177,12 +1257,15 @@ def fetch_post_list(page: Page, config: dict) -> list[dict]:
                 purpose=f"列表第 {page_num} 页",
                 required_selector="article",
             )
+        except StopRequested:
+            raise
         except Exception as e:
             logger.error(f"第 {page_num} 页打开失败，停止抓取: {e}")
             break
         random_sleep(
             timing.get("min_page_load_wait", 2),
             timing.get("max_page_load_wait", 5),
+            config,
         )
 
         # 关闭弹窗（只在第1页）
@@ -1199,7 +1282,7 @@ def fetch_post_list(page: Page, config: dict) -> list[dict]:
             break
 
         # 翻页间随机等待
-        random_sleep(1, 3)
+        random_sleep(1, 3, config)
 
     logger.info(f"共抓取到 {len(all_posts)} 个目标帖子（去重后）")
     return all_posts
@@ -1231,6 +1314,7 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
     title = post["title"]
 
     try:
+        _raise_if_stopped(config)
         # --- 1. 进入帖子详情页 ---
         logger.info(f"进入帖子: {title} -> {url}")
         comment_form_sel = forum_cfg.get("comment_form_selector", "#comment-form")
@@ -1244,29 +1328,38 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
         random_sleep(
             timing.get("min_page_load_wait", 2),
             timing.get("max_page_load_wait", 5),
+            config,
         )
 
         # --- 2. 关闭弹窗广告 ---
+        _raise_if_stopped(config)
         dismiss_popups(page, config)
 
         # --- 3. 模拟鼠标移动 + 滚动到评论区 ---
-        simulate_mouse_movement(page)
+        _raise_if_stopped(config)
+        simulate_mouse_movement(page, config)
         simulate_human_scroll(page, config)
 
         # --- 4. 等待评论表单出现并滚动到可见 ---
         try:
-            page.wait_for_selector(comment_form_sel, timeout=10000)
+            _raise_if_stopped(config)
+            _wait_for_selector_interruptibly(
+                page, comment_form_sel, timeout=10000, config=config
+            )
             page.evaluate(f'document.querySelector("{comment_form_sel}").scrollIntoView({{behavior:"smooth",block:"center"}})')
-            random_sleep(1, 2)
+            random_sleep(1, 2, config)
         except Exception:
+            _raise_if_stopped(config)
             logger.warning("评论表单未检测到，继续尝试填写")
 
         random_sleep(
             timing.get("min_action_interval", 1),
             timing.get("max_action_interval", 3),
+            config,
         )
 
         # --- 5. 获取页面上下文并生成评论 ---
+        _raise_if_stopped(config)
         page_context = ""
         try:
             body_text = page.inner_text("body")
@@ -1288,11 +1381,13 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
         )
 
         # --- 6. 先填写评论内容（textarea#textarea） ---
+        _raise_if_stopped(config)
         comment_sel = forum_cfg["comment_input_selector"]
         logger.debug(f"填写评论: {comment_text}")
         page.click(comment_sel)
-        random_sleep(0.3, 0.8)
+        random_sleep(0.3, 0.8, config)
         page.fill(comment_sel, "")
+        _raise_if_stopped(config)
         page.type(
             comment_sel,
             comment_text,
@@ -1302,36 +1397,40 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
             ),
         )
 
-        random_sleep(0.5, 1.5)
+        random_sleep(0.5, 1.5, config)
 
         # --- 7. 填写昵称（input#author） ---
+        _raise_if_stopped(config)
         nickname_sel = forum_cfg["nickname_input_selector"]
         logger.debug(f"填写昵称: {nickname}")
         page.click(nickname_sel)
-        random_sleep(0.3, 0.8)
+        random_sleep(0.3, 0.8, config)
         page.fill(nickname_sel, "")
         typing_delay = random.randint(
             timing.get("min_typing_delay", 50),
             timing.get("max_typing_delay", 150),
         )
+        _raise_if_stopped(config)
         page.type(nickname_sel, nickname, delay=typing_delay)
 
         random_sleep(
             timing.get("min_action_interval", 1),
             timing.get("max_action_interval", 3),
+            config,
         )
 
         # --- 8. 模拟鼠标移动到提交按钮附近 ---
-        simulate_mouse_movement(page)
-        random_sleep(0.5, 1.0)
+        simulate_mouse_movement(page, config)
+        random_sleep(0.5, 1.0, config)
 
         # --- 9. 点击提交（input#submit） ---
+        _raise_if_stopped(config)
         submit_sel = forum_cfg["submit_button_selector"]
         logger.info(f"点击提交评论按钮 | 昵称={nickname} | 评论={comment_text}")
         page.click(submit_sel)
 
         # --- 10. 等待页面响应并验证结果 ---
-        random_sleep(3, 5)
+        random_sleep(3, 5, config)
 
         # 检查方式1: 页面是否跳转（评论提交后通常会刷新或跳转）
         current_url = page.url
@@ -1341,10 +1440,13 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
         success_sel = forum_cfg.get("success_indicator_selector")
         if success_sel:
             try:
-                page.wait_for_selector(success_sel, timeout=8000)
+                _wait_for_selector_interruptibly(
+                    page, success_sel, timeout=8000, config=config
+                )
                 logger.info(f"[成功] 帖子 [{title}] 评论提交成功 | 昵称={nickname}")
                 return {"success": True, "comment": comment_text, "nickname": nickname}
             except Exception:
+                _raise_if_stopped(config)
                 # 可能页面已刷新，评论已提交但未找到指示器
                 logger.warning(f"[未确认] 帖子 [{title}] 未检测到成功提示，但可能已提交")
                 return {"success": True, "comment": comment_text, "nickname": nickname}
@@ -1353,6 +1455,8 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
             return {"success": True, "comment": comment_text, "nickname": nickname}
 
     except Exception as e:
+        if _stop_checker(config)():
+            raise StopRequested("用户请求停止")
         logger.error(f"[失败] 帖子 [{title}] 评论失败: {e}")
         return {"success": False, "comment": "", "nickname": ""}
 
@@ -1410,6 +1514,7 @@ def scan_comments_for_sentiment(page: Page, post: dict, config: dict, sentiment_
 
     返回: 匹配到的评论数
     """
+    _raise_if_stopped(config)
     sentiment_cfg = config.get("sentiment", {})
     if not sentiment_cfg.get("enabled", False):
         return 0
@@ -1423,6 +1528,7 @@ def scan_comments_for_sentiment(page: Page, post: dict, config: dict, sentiment_
     try:
         comment_bodies = page.query_selector_all(".comment-body")
         for cb in comment_bodies:
+            _raise_if_stopped(config)
             full_text = (cb.inner_text() or "").strip()
             if not full_text:
                 continue
@@ -1471,6 +1577,8 @@ def scan_comments_for_sentiment(page: Page, post: dict, config: dict, sentiment_
                 logger.info(f"[舆论] 匹配关键词 {matched} | 作者={author} | 内容={comment_text[:50]}")
 
     except Exception as e:
+        if _stop_checker(config)():
+            raise StopRequested("用户请求停止")
         logger.error(f"舆论扫描异常: {e}")
 
     return matched_count
@@ -1495,10 +1603,12 @@ def _process_single_post(page: Page, post: dict, config: dict,
                          db: PostDatabase, sentiment_db: SentimentDatabase,
                          stats: dict, max_retries: int = 2) -> None:
     """处理单个帖子，带重试机制"""
+    _raise_if_stopped(config)
     # 获取该帖子已用过的评论，避免重复
     used_comments = db.get_used_comments(post["post_id"])
 
     for attempt in range(1, max_retries + 1):
+        _raise_if_stopped(config)
         try:
             result = post_comment(page, post, config, used_comments)
             success = result["success"]
@@ -1513,6 +1623,8 @@ def _process_single_post(page: Page, post: dict, config: dict,
             try:
                 sentiment_count = scan_comments_for_sentiment(page, post, config, sentiment_db)
                 stats["sentiment_matched"] += sentiment_count
+            except StopRequested:
+                raise
             except Exception:
                 pass
 
@@ -1528,16 +1640,21 @@ def _process_single_post(page: Page, post: dict, config: dict,
                 stats["failed"] += 1
             return  # 成功，退出重试循环
 
+        except StopRequested:
+            logger.info("收到停止信号，当前帖子处理中断")
+            raise
         except Exception as e:
+            _raise_if_stopped(config)
             logger.warning(f"帖子 [{post['title'][:30]}] 第 {attempt} 次尝试失败: {e}")
             if attempt < max_retries:
                 logger.info(f"等待 5 秒后重试...")
-                time.sleep(5)
+                _sleep_interruptibly(5, config)
                 # 尝试刷新页面恢复
                 try:
                     page.goto("about:blank", timeout=5000)
-                    time.sleep(1)
+                    _sleep_interruptibly(1, config)
                 except Exception:
+                    _raise_if_stopped(config)
                     pass
             else:
                 logger.error(f"帖子 [{post['title'][:30]}] 重试 {max_retries} 次仍失败，跳过")
@@ -1577,12 +1694,15 @@ def run_posting_cycle(config: dict) -> dict:
     page = None
 
     try:
+        _raise_if_stopped(config)
         pw = sync_playwright().start()
         browser, context = create_browser_context(pw, config)
         page = context.new_page()
+        _register_runtime(config, page, context, browser)
 
         # 1. 抓取帖子列表（内部自动翻页+关闭弹窗）
         posts = fetch_post_list(page, config)
+        _raise_if_stopped(config)
 
         # 2. 默认允许下一轮继续处理同一批帖子，实现循环评论。
         repeat_processed = posting_cfg.get("repeat_processed_posts", True)
@@ -1605,17 +1725,22 @@ def run_posting_cycle(config: dict) -> dict:
 
         # 4. 逐个回帖
         for i, post in enumerate(posts_to_process):
+            _raise_if_stopped(config)
             logger.info(f"===== [{i+1}/{total}] {post['title'][:40]} =====")
 
             # 定期重启浏览器防卡死
             if i > 0 and i % restart_every == 0:
                 logger.info(f"已处理 {i} 个帖子，重启浏览器防卡死...")
                 _safe_close_browser(page, context, browser)
+                _register_runtime(config, None, None, None)
                 try:
+                    _raise_if_stopped(config)
                     browser, context = create_browser_context(pw, config)
                     page = context.new_page()
+                    _register_runtime(config, page, context, browser)
                     logger.info("浏览器重启成功")
                 except Exception as e:
+                    _raise_if_stopped(config)
                     logger.error(f"浏览器重启失败: {e}，尝试完全重建...")
                     try:
                         pw.stop()
@@ -1624,6 +1749,7 @@ def run_posting_cycle(config: dict) -> dict:
                     pw = sync_playwright().start()
                     browser, context = create_browser_context(pw, config)
                     page = context.new_page()
+                    _register_runtime(config, page, context, browser)
                     logger.info("浏览器完全重建成功")
 
             # 处理帖子（带重试）
@@ -1636,13 +1762,16 @@ def run_posting_cycle(config: dict) -> dict:
                     timing.get("max_between_posts", 20),
                 )
                 logger.info(f"下一个帖子等待 {wait:.0f} 秒 | 进度 {i+1}/{total}")
-                time.sleep(wait)
+                _sleep_interruptibly(wait, config)
 
         stats["skipped"] = len(new_posts) - len(posts_to_process)
 
+    except StopRequested:
+        logger.info("收到停止信号，本轮已立即中断")
     except Exception as e:
         logger.error(f"执行流程异常: {e}", exc_info=True)
     finally:
+        _register_runtime(config, None, None, None)
         _safe_close_browser(page, context, browser)
         try:
             if pw:

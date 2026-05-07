@@ -387,7 +387,13 @@ function refreshStatus() {
   fetch('/api/status').then(r => r.json()).then(d => {
     const dot = document.getElementById('statusDot');
     const txt = document.getElementById('statusText');
-    if (d.running) {
+    if (d.stopping) {
+      dot.classList.remove('on');
+      txt.textContent = '停止中';
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = true;
+      document.getElementById('btnOnce').disabled = true;
+    } else if (d.running) {
       dot.classList.add('on');
       txt.textContent = '运行中';
       document.getElementById('btnStart').disabled = true;

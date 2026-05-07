@@ -50,7 +50,10 @@ app = Flask(__name__)
 CONFIG_PATH = "monitor_config.json"
 monitor_state = {
     "running": False,
+    "stopping": False,
     "thread": None,
+    "stop_event": threading.Event(),
+    "active_runtime": {"page": None, "context": None, "browser": None},
     "cycle_count": 0,
     "last_error": "",
     "current_action": "idle",
@@ -92,10 +95,29 @@ class DequeHandler(logging.Handler):
 # ============================================================
 
 
+def _should_stop() -> bool:
+    return monitor_state["stop_event"].is_set()
+
+
+def _register_runtime(page=None, context=None, browser=None) -> None:
+    with monitor_lock:
+        monitor_state["active_runtime"] = {
+            "page": page,
+            "context": context,
+            "browser": browser,
+        }
+
+
+def _inject_stop_hooks(config: dict) -> dict:
+    config["_should_stop"] = _should_stop
+    config["_register_runtime"] = _register_runtime
+    return config
+
+
 def monitor_loop(config):
     """后台持续监控循环"""
-    while monitor_state["running"]:
-        config = load_config(CONFIG_PATH)
+    while not monitor_state["stop_event"].is_set():
+        config = _inject_stop_hooks(load_config(CONFIG_PATH))
         timing = config.get("timing", {})
         interval_seconds = get_cycle_interval_seconds(timing)
 
@@ -108,16 +130,20 @@ def monitor_loop(config):
             monitor_state["last_error"] = str(e)
             logger.error(f"监控循环异常: {e}", exc_info=True)
 
-        if not monitor_state["running"]:
+        if monitor_state["stop_event"].is_set():
             break
 
         monitor_state["current_action"] = f"等待 {interval_seconds} 秒后下一轮..."
         for _ in range(interval_seconds):
-            if not monitor_state["running"]:
+            if monitor_state["stop_event"].is_set():
                 break
             time.sleep(1)
 
-    monitor_state["current_action"] = "idle"
+    with monitor_lock:
+        monitor_state["running"] = False
+        monitor_state["stopping"] = False
+        monitor_state["current_action"] = "idle"
+        monitor_state["active_runtime"] = {"page": None, "context": None, "browser": None}
 
 
 def get_cycle_interval_seconds(timing: dict) -> int:
@@ -150,6 +176,7 @@ def api_status():
     stats = db.get_stats()
     return jsonify({
         "running": monitor_state["running"],
+        "stopping": monitor_state["stopping"],
         "cycle_count": monitor_state["cycle_count"],
         "current_action": monitor_state["current_action"],
         "last_error": monitor_state["last_error"],
@@ -170,11 +197,15 @@ def api_start():
             return jsonify({"ok": False, "msg": "已在运行中"})
 
         config = load_config(CONFIG_PATH)
+        monitor_state["stop_event"] = threading.Event()
         monitor_state["running"] = True
+        monitor_state["stopping"] = False
         monitor_state["cycle_count"] = 0
         monitor_state["last_error"] = ""
+        monitor_state["current_action"] = "启动中"
+        monitor_state["active_runtime"] = {"page": None, "context": None, "browser": None}
 
-        t = threading.Thread(target=monitor_loop, args=(config,), daemon=True)
+        t = threading.Thread(target=monitor_loop, args=(_inject_stop_hooks(config),), daemon=True)
         t.start()
         monitor_state["thread"] = t
     logger.info("Dashboard: 监控已启动")
@@ -188,9 +219,12 @@ def api_stop():
         if not monitor_state["running"] and not (thread and thread.is_alive()):
             return jsonify({"ok": False, "msg": "当前未运行"})
 
-        monitor_state["running"] = False
-    logger.info("Dashboard: 监控已停止")
-    return jsonify({"ok": True, "msg": "已发送停止信号，等待当前任务完成"})
+        monitor_state["stopping"] = True
+        monitor_state["current_action"] = "正在立即停止..."
+        monitor_state["stop_event"].set()
+
+    logger.info("Dashboard: 已发送立即停止信号")
+    return jsonify({"ok": True, "msg": "已发送立即停止信号，最多几秒内中断当前操作"})
 
 
 @app.route("/api/run-once", methods=["POST"])
@@ -199,20 +233,29 @@ def api_run_once():
         return jsonify({"ok": False, "msg": "监控正在运行，请先停止"})
 
     def run():
-        monitor_state["running"] = True
-        monitor_state["current_action"] = "单次执行中"
         try:
-            config = load_config(CONFIG_PATH)
+            config = _inject_stop_hooks(load_config(CONFIG_PATH))
             run_posting_cycle(config)
         except Exception as e:
             monitor_state["last_error"] = str(e)
             logger.error(f"单次执行异常: {e}", exc_info=True)
         finally:
-            monitor_state["running"] = False
-            monitor_state["current_action"] = "idle"
+            with monitor_lock:
+                monitor_state["running"] = False
+                monitor_state["stopping"] = False
+                monitor_state["current_action"] = "idle"
+                monitor_state["active_runtime"] = {"page": None, "context": None, "browser": None}
 
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
+    with monitor_lock:
+        monitor_state["stop_event"] = threading.Event()
+        monitor_state["running"] = True
+        monitor_state["stopping"] = False
+        monitor_state["current_action"] = "单次执行中"
+        monitor_state["last_error"] = ""
+        monitor_state["active_runtime"] = {"page": None, "context": None, "browser": None}
+        t = threading.Thread(target=run, daemon=True)
+        monitor_state["thread"] = t
+        t.start()
     return jsonify({"ok": True, "msg": "单次执行已启动"})
 
 

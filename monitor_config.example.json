@@ -85,6 +85,7 @@
     "monitor_interval_seconds": 60,
     "monitor_interval_minutes": 10,
     "navigation_timeout_ms": 60000,
+    "navigation_poll_timeout_ms": 3000,
     "navigation_retries": 3,
     "navigation_retry_wait": 5,
     "selector_timeout_ms": 15000
