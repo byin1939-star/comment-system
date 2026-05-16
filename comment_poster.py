@@ -444,6 +444,14 @@ def _comment_len(text: str) -> int:
     return len(compact)
 
 
+def _get_posting_float(config: dict, key: str, default: float) -> float:
+    """读取 posting 中的小数配置，配置异常时回退默认值。"""
+    try:
+        return float(config.get("posting", {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _has_visible_text(text: str) -> bool:
     """过滤普通空白和零宽字符"""
     return bool(re.sub(r"[\s\u200b\u200c\u200d\ufeff]+", "", text or ""))
@@ -546,6 +554,101 @@ def _mix_comment_samples(live_samples: list[str], library_samples: list[str], co
     return mixed
 
 
+def _builtin_meme_comments() -> list[str]:
+    """评论区常见的短梗兜底，不依赖标题。"""
+    return [
+        "我是穿越者",
+        "美加墨世界杯",
+        "葡萄牙冠军",
+        "法国冠军",
+        "来个堵桥的",
+        "今天又活了",
+        "误闯天家",
+        "来个打瓦的",
+        "人活着干嘛",
+        "试图寻找人生的意义",
+        "我的发",
+        "牛逼",
+        "谁懂啊",
+        "上强度",
+        "给我整不会了",
+        "这谁在谈啊",
+        "梦里啥都有",
+        "突然沉默",
+        "谁在幸福",
+        "人间不值得",
+        "有无后续",
+        "继续继续",
+        "别停",
+        "我宣布可以",
+        "好家伙",
+        "别太会了",
+        "看笑了",
+        "懂的都懂",
+        "今晚有活了",
+        "这波能处",
+    ]
+
+
+def _comment_key(text: str) -> str:
+    return re.sub(r"[\s，。！？,.!?\-—~～…、：:；;\"'“”‘’`]+", "", text or "")
+
+
+def _split_comment_fragments(text: str) -> list[str]:
+    """把一串真实评论拆成更像随手发的短片段。"""
+    parts = [
+        _normalize_real_comment_sample(part)
+        for part in re.split(r"[。！？!?，,、；;]+", text or "")
+    ]
+    return [
+        part
+        for part in parts
+        if 2 <= _comment_len(part) <= 18 and not _is_blocked_comment_sample(part)
+    ]
+
+
+def _pick_sample_style_comment(samples: list[str], config: dict = None) -> str:
+    """
+    样本优先的评论生成。
+
+    真实评论区的自然感很多来自复用口癖和短梗，不来自重新写一句“更好”的话。
+    """
+    config = config or {}
+    candidates = []
+    seen = set()
+    for sample in (samples or []) + _builtin_meme_comments():
+        sample = _normalize_real_comment_sample(sample)
+        if not _has_visible_text(sample) or _is_blocked_comment_sample(sample):
+            continue
+
+        fragments = _split_comment_fragments(sample)
+        options = fragments or [sample]
+        for option in options:
+            if not (2 <= _comment_len(option) <= 18):
+                continue
+            key = _comment_key(option)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            candidates.append(option)
+
+    if not candidates:
+        return _fallback_comment([])
+
+    fragment_rate = _get_posting_float(config, "sample_fragment_rate", 0.35)
+    meme_rate = _get_posting_float(config, "meme_comment_rate", 0.18)
+
+    meme_pool = [c for c in candidates if c in _builtin_meme_comments()]
+    if meme_pool and random.random() < meme_rate:
+        return random.choice(meme_pool)
+
+    short_pool = [c for c in candidates if _comment_len(c) <= 8]
+    if short_pool and random.random() < fragment_rate:
+        return random.choice(short_pool)
+
+    return random.choice(candidates)
+
+
 def _format_prompt_template(template: str, title: str, context: str) -> str:
     """安全替换 prompt 模板变量"""
     return (
@@ -611,9 +714,6 @@ def _is_bad_ai_comment(text: str, samples: list[str] = None) -> bool:
         "支持一下",
         "作为",
         "根据",
-        "绷不住",
-        "不是哥们",
-        "我服了",
         "哈人",
         "离谱",
     )
@@ -695,12 +795,17 @@ def generate_comment(
     # AI 模式：读取评论库样本，构建带样本的 prompt
     history_samples = _load_sample_comments(config, count=50)
     samples = _mix_comment_samples(extra_samples or [], history_samples, count=45)
+    sample_first_rate = _get_posting_float(config, "sample_first_rate", 0.85)
+    if samples and random.random() < sample_first_rate:
+        result = _pick_sample_style_comment(samples, config)
+        logger.info(f"样本风格评论: {result}")
+        return result
 
     if provider in ("openai", "deepseek"):
-        return _generate_via_openai(title, context, ai_cfg, samples)
+        return _generate_via_openai(title, context, ai_cfg, samples, config)
 
     elif provider == "gemini":
-        return _generate_via_gemini(title, context, ai_cfg, samples)
+        return _generate_via_gemini(title, context, ai_cfg, samples, config)
 
     else:
         logger.warning(f"未知的 AI provider: {provider}，回退到文件模式")
@@ -708,7 +813,13 @@ def generate_comment(
         return _load_random_comment(posting_cfg.get("history_comments_file", "history_comments.txt"))
 
 
-def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[str] = None) -> str:
+def _generate_via_openai(
+    title: str,
+    context: str,
+    ai_cfg: dict,
+    samples: list[str] = None,
+    config: dict = None,
+) -> str:
     """通过 OpenAI 兼容 API 生成评论（支持自定义 base_url）"""
     try:
         import openai
@@ -766,8 +877,8 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
             "2. 不要完整主谓宾，不要像正常人认真点评，别写成作文。\n"
             "3. 样本权重大于标题，允许大幅跑题、玩梗、热点、生活碎片、口头禅。\n"
             "4. 学样本的开头、词序、粗糙感和随机感，但不要照抄样本。\n"
-            "5. 不要连续使用同类开头，尤其别复读固定网梗。\n"
-            "6. 禁止这些偷懒开头：绷不住了、不是哥们、我服了、哈人、离谱。\n"
+            "5. 不要连续使用同类开头，固定网梗可以用，但别每次都同一个。\n"
+            "6. 禁止这些偷懒开头：哈人、离谱。\n"
             "7. 禁止模板腔：这标题、好文章、感谢分享、支持一下、值得一看、不错。\n"
             "8. 不要道德评价、不要解释、不要序号、不要引号，不要 emoji。\n"
             "9. 只输出评论内容本身。"
@@ -820,7 +931,7 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
                 break
             logger.info(f"AI 评论像模板或重复，重试 {attempt+1}/4: {result}")
         if _is_bad_ai_comment(result, samples):
-            fallback = _fallback_comment(samples)
+            fallback = _pick_sample_style_comment(samples, config)
             logger.info(f"AI 多次未生成可用评论，回退评论: {fallback}")
             return fallback
         logger.info(f"AI 生成评论: {result}")
@@ -828,12 +939,18 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
     except Exception as e:
         logger.error(f"API 调用失败: {e}")
         # 失败时从评论库随机抽取一条兜底
-        fallback = _fallback_comment(samples)
+        fallback = _pick_sample_style_comment(samples, config)
         logger.info(f"回退评论: {fallback}")
         return fallback
 
 
-def _generate_via_gemini(title: str, context: str, ai_cfg: dict, samples: list[str] = None) -> str:
+def _generate_via_gemini(
+    title: str,
+    context: str,
+    ai_cfg: dict,
+    samples: list[str] = None,
+    config: dict = None,
+) -> str:
     """通过 Google Gemini API 生成评论"""
     try:
         import google.generativeai as genai
@@ -861,12 +978,12 @@ def _generate_via_gemini(title: str, context: str, ai_cfg: dict, samples: list[s
         response = model.generate_content(prompt)
         result = _clean_ai_comment(response.text)
         if _is_bad_ai_comment(result, samples):
-            result = _fallback_comment(samples)
+            result = _pick_sample_style_comment(samples, config)
         logger.info(f"Gemini 生成评论: {result}")
         return result
     except Exception as e:
         logger.error(f"Gemini API 调用失败: {e}")
-        return _fallback_comment(samples)
+        return _pick_sample_style_comment(samples, config)
 
 
 def _load_random_comment(filepath: str) -> str:
