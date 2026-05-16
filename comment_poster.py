@@ -419,7 +419,7 @@ def _load_sample_comments(config: dict, count: int = 15) -> list[str]:
     lines = [
         l.strip()
         for l in path.read_text(encoding="utf-8").splitlines()
-        if _has_visible_text(l)
+        if _has_visible_text(l) and not _is_blocked_comment_sample(l)
     ]
     if not lines:
         return []
@@ -447,6 +447,103 @@ def _comment_len(text: str) -> int:
 def _has_visible_text(text: str) -> bool:
     """过滤普通空白和零宽字符"""
     return bool(re.sub(r"[\s\u200b\u200c\u200d\ufeff]+", "", text or ""))
+
+
+def _is_blocked_comment_sample(text: str) -> bool:
+    """过滤不适合作为学习样本的高风险词。"""
+    compact = re.sub(r"\s+", "", text or "")
+    blocked_terms = (
+        "未成年",
+        "小学生",
+        "初中生",
+        "高中生",
+        "幼女",
+        "萝莉",
+        "小萝莉",
+        "学生妹",
+    )
+    return any(term in compact for term in blocked_terms)
+
+
+def _normalize_real_comment_sample(text: str) -> str:
+    """把页面里的真实评论清成一行短样本。"""
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    cleaned = re.sub(r"^(回复|评论|内容)\s*[:：]\s*", "", cleaned)
+    return cleaned.strip(" \t\r\n\"'“”‘’`，。")
+
+
+def _extract_comment_text_from_block(full_text: str) -> str:
+    """从评论块中剥掉作者、回复按钮和时间，只保留正文。"""
+    lines = [line.strip() for line in (full_text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    author = lines[0]
+    content_lines = []
+    for line in lines:
+        if line == author or line in ("回复", "编辑", "删除"):
+            continue
+        if re.match(r"\d+\s*(秒|分钟|小时|天|星期|周|个月|年)前", line):
+            continue
+        if re.match(r"\d{4}[-/年]\d{1,2}[-/月]\d{1,2}", line):
+            continue
+        content_lines.append(line)
+    return _normalize_real_comment_sample(" ".join(content_lines))
+
+
+def _extract_existing_comment_samples(page: Page, config: dict, limit: int = None) -> list[str]:
+    """读取当前帖子页其他真实用户的评论，用来给 AI 学语气。"""
+    posting_cfg = config.get("posting", {})
+    forum_cfg = config.get("forum", {})
+    selector = forum_cfg.get("existing_comment_selector", ".comment-body")
+    max_samples = limit or int(posting_cfg.get("live_comment_sample_max", 35))
+    max_len = int(posting_cfg.get("live_comment_sample_max_len", 18))
+
+    try:
+        nodes = page.query_selector_all(selector)
+    except Exception:
+        return []
+
+    samples = []
+    seen = set()
+    for node in nodes[-120:]:
+        try:
+            text = _extract_comment_text_from_block(node.inner_text() or "")
+        except Exception:
+            continue
+        if not _has_visible_text(text) or _is_blocked_comment_sample(text):
+            continue
+        if not (2 <= _comment_len(text) <= max_len):
+            continue
+        key = re.sub(r"[\s，。！？,.!?\-—~～…、：:；;\"'“”‘’`]+", "", text)
+        if key in seen:
+            continue
+        seen.add(key)
+        samples.append(text)
+
+    random.shuffle(samples)
+    return samples[:max_samples]
+
+
+def _mix_comment_samples(live_samples: list[str], library_samples: list[str], count: int = 45) -> list[str]:
+    """合并本帖真实评论和评论库样本，本帖评论优先。"""
+    mixed = []
+    seen = set()
+    for group in (live_samples or [], library_samples or []):
+        for sample in group:
+            sample = _normalize_real_comment_sample(sample)
+            key = re.sub(r"[\s，。！？,.!?\-—~～…、：:；;\"'“”‘’`]+", "", sample)
+            if not key or key in seen or _is_blocked_comment_sample(sample):
+                continue
+            seen.add(key)
+            mixed.append(sample)
+    if len(mixed) > count:
+        head = mixed[: min(len(live_samples or []), count // 2)]
+        rest = [s for s in mixed if s not in head]
+        random.shuffle(rest)
+        mixed = (head + rest)[:count]
+    random.shuffle(mixed)
+    return mixed
 
 
 def _format_prompt_template(template: str, title: str, context: str) -> str:
@@ -533,7 +630,9 @@ def _is_bad_ai_comment(text: str, samples: list[str] = None) -> bool:
 
     if text in samples:
         return True
-    if len(text) < 2 or len(text) > 24:
+    if _is_blocked_comment_sample(text):
+        return True
+    if len(text) < 2 or len(text) > 18:
         return True
     compact = re.sub(r"[\s，。！？,.!?\-—~～…]+", "", text)
     if any(compact.startswith(prefix) for prefix in generic_starts):
@@ -547,21 +646,37 @@ def _is_bad_ai_comment(text: str, samples: list[str] = None) -> bool:
 
 def _fallback_comment(samples: list[str] = None) -> str:
     """AI 不可用时使用更自然的兜底短评"""
-    cleaned_samples = [s.strip() for s in (samples or []) if _has_visible_text(s)]
+    cleaned_samples = [
+        s.strip()
+        for s in (samples or [])
+        if _has_visible_text(s) and not _is_blocked_comment_sample(s)
+    ]
     if cleaned_samples:
         return random.choice(cleaned_samples)
 
     builtin = [
-        "先码住慢慢看",
-        "这个有点意思",
-        "看着还挺上头",
-        "感觉可以蹲一波",
-        "这波有点东西",
+        "这个可以",
+        "太顶了",
+        "我的发",
+        "牛的",
+        "多来点",
+        "人活着干嘛",
+        "今天又活了",
+        "来个堵桥的",
+        "打瓦吗",
+        "缺爱了",
+        "误闯天家",
+        "谁在谈啊",
     ]
     return random.choice(builtin)
 
 
-def generate_comment(title: str, context: str = "", config: dict = None) -> str:
+def generate_comment(
+    title: str,
+    context: str = "",
+    config: dict = None,
+    extra_samples: list[str] = None,
+) -> str:
     """
     生成评论内容。
 
@@ -578,7 +693,8 @@ def generate_comment(title: str, context: str = "", config: dict = None) -> str:
         return _load_random_comment(comments_file)
 
     # AI 模式：读取评论库样本，构建带样本的 prompt
-    samples = _load_sample_comments(config, count=35)
+    history_samples = _load_sample_comments(config, count=50)
+    samples = _mix_comment_samples(extra_samples or [], history_samples, count=45)
 
     if provider in ("openai", "deepseek"):
         return _generate_via_openai(title, context, ai_cfg, samples)
@@ -629,12 +745,13 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
         sample_prefixes = random.sample(sample_prefixes, min(10, len(sample_prefixes)))
 
         style_cards = [
-            "像评论区随手敲两个词，不围着标题写作文",
-            "可以跑题，可以玩梗，可以像弹幕一样短",
-            "学样本里的碎片感，别写完整主谓宾",
+            "像评论区随手敲几个字，不围着标题写作文",
+            "可以完全跑题，可以玩梗，可以像弹幕一样短",
+            "学样本里的碎片感、跳跃感，别写完整主谓宾",
             "像贴吧老哥/路人水评论，短、糙、随机",
-            "热点梗、生活碎碎念、欲望短句都可以混着来",
+            "热点梗、生活碎碎念、抽象短句都可以混着来",
             "宁可像废话，也不要像认真点评",
+            "像真实用户刷到以后顺手留一句，没必要讲道理",
         ]
         chosen_style = random.choice(style_cards)
         custom_prompt = _format_prompt_template(
@@ -643,11 +760,11 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
 
         system_prompt = (
             "你是中文论坛/贴吧里混久了的老用户，只写一条短评论。\n"
-            "目标：优先模仿评论库里的真实样本，像真人随手水一句，不像 AI、不像客服、不像正常点评。\n"
+            "目标：优先模仿本帖真实评论和评论库样本，像真人随手水一句，不像 AI、不像客服、不像正常点评。\n"
             "硬性要求：\n"
-            "1. 2-14 个中文字符优先，最多别超过 20 个字。\n"
+            "1. 2-12 个中文字符优先，最多别超过 18 个字。\n"
             "2. 不要完整主谓宾，不要像正常人认真点评，别写成作文。\n"
-            "3. 不一定要贴合标题，允许跑题、玩梗、热点、生活碎片、口头禅。\n"
+            "3. 样本权重大于标题，允许大幅跑题、玩梗、热点、生活碎片、口头禅。\n"
             "4. 学样本的开头、词序、粗糙感和随机感，但不要照抄样本。\n"
             "5. 不要连续使用同类开头，尤其别复读固定网梗。\n"
             "6. 禁止这些偷懒开头：绷不住了、不是哥们、我服了、哈人、离谱。\n"
@@ -658,14 +775,14 @@ def _generate_via_openai(title: str, context: str, ai_cfg: dict, samples: list[s
 
         user_prompt = (
             f"【本次语气】\n{chosen_style}\n\n"
-            f"【历史真实评论样本】\n{samples_text or '无'}\n\n"
+            f"【真实用户评论样本】\n{samples_text or '无'}\n\n"
             f"【这次可参考的样本开头类型】\n{'、'.join(sample_prefixes) or '无'}\n\n"
             f"【帖子标题】\n{title}\n\n"
             f"【页面片段】\n{context[:180] or '无'}\n\n"
         )
         if custom_prompt:
             user_prompt += f"【额外风格要求】\n{custom_prompt}\n\n"
-        user_prompt += "现在生成一条更像评论库的新短评：短到像弹幕，可以跑题，别正经，别礼貌，别照抄样本。"
+        user_prompt += "现在生成一条更像真实用户的新短评：短到像弹幕，可以跑题，别正经，别礼貌，别照抄样本。"
 
         # 过滤模板腔和重复样本，最多重试4次
         result = ""
@@ -737,7 +854,7 @@ def _generate_via_gemini(title: str, context: str, ai_cfg: dict, samples: list[s
         samples_text = "\n".join(f"- {s}" for s in (samples or []))
         prompt = (
             "你是中文论坛普通用户，只写一条像真人随手回的短评论。\n"
-            "要求：8-24个中文字符，只抓标题一个点，不复述标题，不要“这标题/好文章/感谢分享/支持一下”，不要解释，不要emoji。\n"
+            "要求：2-18个中文字符，优先学样本，可以跑题，不复述标题，不要“这标题/好文章/感谢分享/支持一下”，不要解释，不要emoji。\n"
             f"【样本】\n{samples_text or '无'}\n\n【标题】{title}\n\n只输出评论内容："
         )
 
@@ -1366,15 +1483,22 @@ def post_comment(page: Page, post: dict, config: dict, used_comments: list = Non
             page_context = body_text[:200] if body_text else ""
         except Exception:
             pass
+        live_comment_samples = _extract_existing_comment_samples(page, config)
+        if live_comment_samples:
+            logger.info(f"已学习本帖真实评论样本 {len(live_comment_samples)} 条")
 
         # 生成评论，确保不重复
         used = set(used_comments or [])
-        comment_text = generate_comment(title, page_context, config)
+        comment_text = generate_comment(
+            title, page_context, config, extra_samples=live_comment_samples
+        )
         for _retry in range(5):
             if comment_text not in used:
                 break
             logger.info(f"评论重复，重新生成...")
-            comment_text = generate_comment(title, page_context, config)
+            comment_text = generate_comment(
+                title, page_context, config, extra_samples=live_comment_samples
+            )
         nickname = generate_nickname(
             posting_cfg.get("nickname_length_min", 5),
             posting_cfg.get("nickname_length_max", 8),

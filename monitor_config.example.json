@@ -7,7 +7,7 @@
     "api_key": "",
     "model": "deepseek-v4-pro",
     "base_url": "https://api.deepseek.com/v1",
-    "prompt_template": "主要学习评论库里的短碎真实评论，像贴吧/弹幕随手水一句。2-14字优先，可以跑题、玩梗、热点、生活碎片，不一定按标题来。不要完整主谓宾，不要像正常点评，不要解释，不要照抄样本，每次换开头和句式。"
+    "prompt_template": "推翻正常点评口吻。优先学习本帖真实用户评论和评论库，像贴吧/弹幕随手水一句。2-12字优先，可以跑题、玩梗、热点、生活碎片、抽象发言，不一定按标题来。不要完整主谓宾，不要解释，不要照抄样本，每次换开头和句式。"
   },
   "browser": {
     "headless": true,
@@ -50,6 +50,8 @@
     "post_date_mode": "recent",
     "post_recent_days": 7,
     "short_comment_sample_max_len": 14,
+    "live_comment_sample_max": 35,
+    "live_comment_sample_max_len": 18,
     "repeat_processed_posts": true
   },
   "sentiment": {

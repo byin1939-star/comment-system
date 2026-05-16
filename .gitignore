@@ -1,6 +1,7 @@
 # Local secrets and runtime config
 monitor_config.json
 history_comments.txt
+history_comments.backup*.txt
 .env
 .env.*
 
